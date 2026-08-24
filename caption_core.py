@@ -5,10 +5,10 @@ from collections import Counter
 SAMPLE_RATE = 16000
 FRAME_MS = 30
 
-# 客户端-服务器配置(默认指公司内网；自测用 env 覆盖成隧道 localhost)
-STT_URL = os.environ.get("CAPTION_STT_URL", "http://10.0.0.3:8090/transcribe")
+# 服务地址必须显式配置(见 README / ~/.config/caption.env),不设内网默认值
+STT_URL = os.environ.get("CAPTION_STT_URL", "")
 STT_MODE = os.environ.get("CAPTION_STT_MODE", "upload")   # upload=传字节(远端) / path=传路径(本机 mlx 服务)
-LLM_URL = os.environ.get("CAPTION_LLM_URL", "http://10.0.0.1:4000/v1/chat/completions")
+LLM_URL = os.environ.get("CAPTION_LLM_URL", "")
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
 LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 
@@ -16,6 +16,14 @@ HALLU_PHRASES = ["点赞", "订阅", "转发", "打赏", "字幕", "明镜", "�
                  "感谢观看", "谢谢观看", "谢谢大家", "下期再见", "志愿者",
                  "请不吝", "关注我", "Amara", "字幕组"]
 _HALLU_EXACT = {"字幕", "谢谢观看", "请订阅", "by", "you", ".", "", "thank you", "thanks"}
+
+
+def _require(url, env_name):
+    """地址没配就当场报清楚,别静默打到错的主机。"""
+    if not url:
+        raise RuntimeError(
+            f"{env_name} 未配置。在 ~/.config/caption.env 里设好服务地址后重试(见 README「配置」)。")
+    return url
 
 
 def segment_frames(frames, vad, sample_rate=SAMPLE_RATE, frame_ms=FRAME_MS,
@@ -62,7 +70,7 @@ def pcm_to_wav(pcm, path, sample_rate=SAMPLE_RATE):
 
 def stt(path, url=None):
     """转写一段 wav。upload 模式:读字节 multipart 上传(远端服务);path 模式:传本地路径(本机服务)。"""
-    url = url or STT_URL
+    url = _require(url or STT_URL, "CAPTION_STT_URL")
     if STT_MODE == "path":
         body = json.dumps({"path": path, "language": "auto"}).encode()
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
@@ -90,7 +98,7 @@ _TRANS_SYS = ("你是同声传译。把用户给的这句话翻成简洁、口�
 def translate(text, src_lang, url=None):
     if src_lang == "zh" or not text:
         return text
-    url = url or LLM_URL
+    url = _require(url or LLM_URL, "CAPTION_LLM_URL")
     headers = {"Content-Type": "application/json"}
     if LLM_KEY:
         headers["Authorization"] = f"Bearer {LLM_KEY}"

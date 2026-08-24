@@ -57,15 +57,18 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 ## 配置
 
-所有外部地址与 key 都走环境变量，仓库内不含任何凭据：
+所有外部地址与 key 都走环境变量，仓库内**不含任何凭据、也不含任何内网默认地址**——
+地址没配就当场报错，不会静默打到错的主机。
 
-| 变量 | 用途 |
-|---|---|
-| `CAPTION_STT_URL` / `CAPTION_STT_MODE` | STT 服务地址；`upload` 传字节（远端）/ `path` 传路径（本机） |
-| `CAPTION_LLM_URL` / `CAPTION_LLM_KEY` / `CAPTION_LLM_MODEL` | LLM 网关 |
-| `CAPTION_ACCESS_PW` | 网页版访问口令，设了才要 |
-| `HF_TOKEN` | pyannote 声纹模型（门控） |
-| `MEETING_MODEL` | 换 ASR 模型，如 `Qwen/Qwen3-ASR-0.6B` |
+| 变量 | 必需 | 用途 |
+|---|---|---|
+| `CAPTION_STT_URL` | ✅ | STT 服务地址（如本机 `http://127.0.0.1:8082/transcribe`） |
+| `CAPTION_STT_MODE` | | `upload` 传字节（远端服务）/ `path` 传路径（本机 mlx 服务），默认 `upload` |
+| `CAPTION_LLM_URL` | ✅ | LLM 网关的 `/v1/chat/completions` |
+| `CAPTION_LLM_KEY` / `CAPTION_LLM_MODEL` | | 网关鉴权与模型名，默认模型 `Qwen3.6` |
+| `CAPTION_ACCESS_PW` | | 网页版访问口令，设了才要 |
+| `HF_TOKEN` | | pyannote 声纹模型（门控） |
+| `MEETING_MODEL` | | 换 ASR 模型，如 `Qwen/Qwen3-ASR-0.6B` |
 
 `caption` 从 `~/.config/caption.env` 读取（该文件不入库）。
 

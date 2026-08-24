@@ -9,12 +9,15 @@ from faster_whisper import WhisperModel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("STT_MODEL", "large-v3-turbo")
-LLM_URL = os.environ.get("CAPTION_LLM_URL", "http://10.0.0.1:4000/v1/chat/completions")
+LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置,不设内网默认值
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
 LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 SR, FRAME = 16000, 480           # 30ms 帧
 SILENCE_TAIL, MIN_SPEECH = 0.8, 0.4
 ACCESS_PW = os.environ.get("CAPTION_ACCESS_PW", "")   # 设了就要口令
+
+if not LLM_URL:
+    raise SystemExit("CAPTION_LLM_URL 未配置 —— 设成你的 LLM 网关地址后重试(见 README「配置」)。")
 
 print(f"加载 {MODEL} 到 CUDA ...", flush=True)
 model = WhisperModel(MODEL, device="cuda", compute_type="float16")
