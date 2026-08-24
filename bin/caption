@@ -1,0 +1,14 @@
+#!/bin/bash
+# 实时字幕(外语→中文):采 BlackHole → 远端 whisper(STT) → 网关 Qwen3.6(翻译) → 底部双语浮窗。
+# 配置在 ~/.config/caption.env(STT/LLM 地址 + key)。Ctrl+C 停。
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+# 加载客户端配置(STT_URL / LLM_URL / LLM_KEY / MODEL)
+[ -f "$HOME/.config/caption.env" ] && { set -a; . "$HOME/.config/caption.env"; set +a; }
+
+# 远端可达性自检(给清晰报错，别静默失败)
+if ! curl -s --max-time 4 "${CAPTION_STT_URL%/transcribe}/health" >/dev/null 2>&1; then
+  echo "⚠️ 连不上 STT 服务（${CAPTION_STT_URL:-未配置}）。检查网络/隧道，或 ~/.config/caption.env"; exit 1
+fi
+echo "🌐 实时字幕启动（STT=${CAPTION_STT_URL} / LLM 网关=${CAPTION_LLM_MODEL:-?}）… Ctrl+C 退出"
+exec uv run "$HOME/voice-assistant/caption.py"

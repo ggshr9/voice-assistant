@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+*.egg-info/
+
+# 备份 / 临时
+*.bak
+*.orig
+.DS_Store
+
+# 运行时产物(录音、转写、日志、证书)
+*.log
+*.wav
+*.m4a
+*.mp3
+*.pem
+*.crt
+*.key
+会议录音/
+转写_*/
+
+# 本地配置(含内网地址与 key)
+*.env
+config.local.sh

@@ -1,0 +1,43 @@
+#!/bin/bash
+# 会议录制一键命令
+# 用法：
+#   rec              录麦克风（线下会议 / 自己说话）
+#   rec online       录"会议录制"聚合设备（线上会议：对方+自己声音）
+#   rec online 转写   录完自动调 meeting 转写
+# 录制中按 Ctrl+C 停止保存。
+
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+MODE="$1"
+AUTO="$2"
+DIR="$HOME/会议录音"
+mkdir -p "$DIR"
+TS=$(date +%Y%m%d_%H%M)
+
+if [ "$MODE" = "online" ]; then
+  DEV="会议录制"          # 你在音频MIDI设置里建的聚合设备名
+  OUT="$DIR/线上会议_$TS.m4a"
+else
+  DEV="MacBook Pro Microphone"
+  OUT="$DIR/会议_$TS.m4a"
+fi
+
+# 检查设备是否存在
+if ! ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -q "\] $DEV"; then
+  echo "⚠️ 找不到音频设备：「$DEV」"
+  echo "当前可用设备："
+  ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed -n '/audio devices/,/^$/p' | grep -oE '\[[0-9]+\].*'
+  [ "$MODE" = "online" ] && echo "→ 线上录制需先在「音频 MIDI 设置」建好名为「会议录制」的聚合设备（见安装说明）。"
+  exit 1
+fi
+
+echo "🔴 开始录制（设备：$DEV）→ $OUT"
+echo "   说话/开会，结束按 Ctrl+C 停止..."
+ffmpeg -f avfoundation -i ":$DEV" -ac 1 -ar 16000 -c:a aac "$OUT" 2>/dev/null
+
+echo ""
+echo "✅ 录音已保存：$OUT"
+if [ "$AUTO" = "转写" ] || [ "$AUTO" = "transcribe" ]; then
+  echo "▶ 自动转写中..."
+  meeting "$OUT"
+fi

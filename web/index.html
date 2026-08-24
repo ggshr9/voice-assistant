@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实时字幕</title>
+<style>
+  :root { --fs: 30px; }
+  html,body{height:100%;margin:0}
+  body{font-family:system-ui,"PingFang SC",sans-serif;background:#0f1115;color:#eee;
+       display:flex;flex-direction:column;height:100vh;box-sizing:border-box}
+  header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid #222}
+  header h1{font-size:18px;font-weight:600;margin:0}
+  #dot{width:10px;height:10px;border-radius:50%;background:#666}
+  #dot.ok{background:#2ec26a}#dot.warn{background:#e0a32e}#dot.err{background:#e0533e}
+  #st{font-size:13px;color:#9aa0aa}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 20px}
+  button{font-size:15px;padding:10px 18px;border:0;border-radius:10px;background:#2d6cdf;color:#fff;cursor:pointer}
+  button.g{background:#1f7a44}button.r{background:#7a3030}button.s{background:#3a3f49}
+  button:disabled{opacity:.45;cursor:default}
+  #hint{color:#9aa0aa;font-size:13px;padding:0 20px 6px}#hint b{color:#ffd24a}
+  #cur{margin:6px 20px;background:rgba(255,255,255,.05);border-radius:14px;padding:16px 20px;min-height:74px}
+  #orig{color:#aeb4be;font-size:calc(var(--fs)*.62);min-height:22px}
+  #zh{color:#fff;font-size:var(--fs);font-weight:600;margin-top:6px;min-height:38px}
+  #hist{flex:1;overflow-y:auto;margin:6px 20px 16px;padding:4px 4px;border-top:1px solid #1d2128}
+  .row{padding:8px 6px;border-bottom:1px solid #181b21}
+  .row .o{color:#7f8794;font-size:14px}.row .z{color:#dfe3ea;font-size:17px}.row .t{color:#555;font-size:11px;float:right}
+  #gate{position:fixed;inset:0;background:#0f1115;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9}
+  #gate input{font-size:18px;padding:12px 16px;border-radius:10px;border:1px solid #333;background:#1a1d24;color:#fff;text-align:center}
+  #gate .err{color:#e0533e;font-size:14px;min-height:18px}
+</style>
+</head>
+<body>
+  <div id="gate">
+    <h1>🌐 实时字幕</h1>
+    <input id="pw" type="password" placeholder="输入访问口令" autofocus>
+    <button id="enter">进入</button>
+    <div class="err" id="gerr"></div>
+  </div>
+
+  <header><span id="dot"></span><h1>🌐 实时字幕（外语 → 中文）</h1><span id="st">未开始</span></header>
+  <div class="bar">
+    <button id="go" class="g">▶ 开始</button>
+    <button id="stop" class="r" disabled>■ 停止</button>
+    <button id="dl" class="s" disabled>⬇ 下载记录</button>
+    <button id="fm" class="s">A−</button><button id="fp" class="s">A＋</button>
+  </div>
+  <div id="hint">点「开始」→ 弹窗里选<b>会议窗口</b> → 务必勾上 <b>「分享音频 / 分享标签页声音」</b></div>
+  <div id="cur"><div id="orig"></div><div id="zh">字幕会显示在这里…</div></div>
+  <div id="hist"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let ws, audioCtx, proc, srcNode, stream, pipWin;
+let capturing=false, manualStop=false, retry=0, pw="";
+const history=[];
+
+function setStatus(cls,txt){ $('dot').className=cls; $('st').textContent=txt; }
+function pushHist(o,z){
+  const t=new Date().toTimeString().slice(0,8);
+  history.push({t,o,z});
+  const div=document.createElement('div'); div.className='row';
+  div.innerHTML='<span class="t"></span><div class="o"></div><div class="z"></div>';
+  div.querySelector('.t').textContent=t; div.querySelector('.o').textContent=o; div.querySelector('.z').textContent=z;
+  $('hist').appendChild(div); $('hist').scrollTop=$('hist').scrollHeight;
+}
+function showCur(o,z){
+  for(const d of [document, pipWin&&!pipWin.closed&&pipWin.document].filter(Boolean)){
+    const a=d.getElementById('orig'),b=d.getElementById('zh');
+    if(a)a.textContent=o||''; if(b)b.textContent=z||'';
+  }
+}
+
+// ---- 口令门 ----
+$('enter').onclick=()=>{ pw=$('pw').value.trim(); if(!pw){return;} sessionStorage.setItem('cap_pw',pw); $('gate').style.display='none'; };
+$('pw').onkeydown=e=>{ if(e.key==='Enter')$('enter').click(); };
+if(sessionStorage.getItem('cap_pw')){ pw=sessionStorage.getItem('cap_pw'); $('gate').style.display='none'; }
+
+// ---- WS（带重连）----
+function connectWS(){
+  setStatus('warn','连接中…');
+  ws=new WebSocket('wss://'+location.host+'/ws?pw='+encodeURIComponent(pw));
+  ws.binaryType='arraybuffer';
+  ws.onmessage=e=>{
+    const d=JSON.parse(e.data);
+    if(d.error){
+      if(d.error.includes('口令')){ setStatus('err','口令错误'); manualStop=true; stopAll(); sessionStorage.removeItem('cap_pw'); $('gate').style.display='flex'; $('gerr').textContent='口令错误，重试'; return; }
+      setStatus('err',d.error); return;
+    }
+    if(d.status==='ready'){ setStatus('ok', capturing?'● 字幕中':'已连接'); return; }
+    if(d.orig||d.zh){ showCur(d.orig,d.zh); pushHist(d.orig,d.zh); $('dl').disabled=false; }
+  };
+  ws.onclose=()=>{ if(capturing && !manualStop){ retry++; setStatus('warn','断线重连 #'+retry+'…'); setTimeout(connectWS, Math.min(5000,800*retry)); } };
+  ws.onerror=()=>{ try{ws.close()}catch(e){} };
+}
+
+// ---- 开始 ----
+async function openPip(){
+  if(!('documentPictureInPicture' in window))return;
+  try{ pipWin=await documentPictureInPicture.requestWindow({width:560,height:140});
+    const s=pipWin.document.createElement('style');
+    s.textContent='body{margin:0;background:rgba(10,12,16,.82);color:#fff;font-family:system-ui}'+
+      '#orig{color:#aeb4be;font-size:18px;padding:12px 16px 0}#zh{font-size:28px;font-weight:600;padding:4px 16px 14px}';
+    pipWin.document.head.append(s); pipWin.document.body.innerHTML='<div id="orig"></div><div id="zh">…</div>';
+  }catch(e){}
+}
+$('go').onclick=async()=>{
+  if(capturing)return;
+  await openPip();
+  try{ stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true}); }
+  catch(e){ if(pipWin)pipWin.close(); return; }
+  const at=stream.getAudioTracks();
+  if(!at.length){ alert('没拿到声音！重来一次，记得勾选「分享音频 / 分享标签页声音」。'); stream.getTracks().forEach(t=>t.stop()); if(pipWin)pipWin.close(); return; }
+  stream.getVideoTracks().forEach(t=>t.stop());
+  capturing=true; manualStop=false; retry=0;
+  $('go').disabled=true; $('stop').disabled=false;
+  connectWS();
+  audioCtx=new AudioContext({sampleRate:16000});
+  srcNode=audioCtx.createMediaStreamSource(new MediaStream([at[0]]));
+  proc=audioCtx.createScriptProcessor(4096,1,1);
+  const mute=audioCtx.createGain(); mute.gain.value=0;
+  srcNode.connect(proc); proc.connect(mute); mute.connect(audioCtx.destination);
+  proc.onaudioprocess=ev=>{
+    if(!ws||ws.readyState!==1)return;
+    const f=ev.inputBuffer.getChannelData(0),i16=new Int16Array(f.length);
+    for(let i=0;i<f.length;i++){let s=Math.max(-1,Math.min(1,f[i]));i16[i]=s<0?s*0x8000:s*0x7fff;}
+    ws.send(i16.buffer);
+  };
+  at[0].onended=()=>stopAll();   // 用户在浏览器点"停止共享"
+  showCur('','（等待对方说话…）');
+};
+
+// ---- 停止 ----
+function stopAll(){
+  manualStop=true; capturing=false;
+  try{proc&&proc.disconnect()}catch(e){} try{srcNode&&srcNode.disconnect()}catch(e){}
+  try{audioCtx&&audioCtx.close()}catch(e){} try{stream&&stream.getTracks().forEach(t=>t.stop())}catch(e){}
+  try{ws&&ws.close()}catch(e){}
+  $('go').disabled=false; $('stop').disabled=true;
+  setStatus('','已停止');
+}
+$('stop').onclick=stopAll;
+
+// ---- 导出记录 ----
+$('dl').onclick=()=>{
+  if(!history.length)return;
+  const d=new Date();
+  let txt='实时字幕记录  '+d.toLocaleString('zh-CN')+'\n'+'='.repeat(40)+'\n\n';
+  for(const h of history){ txt+='['+h.t+'] '+h.o+'\n        '+h.z+'\n\n'; }
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='字幕记录_'+d.toISOString().slice(0,16).replace(/[:T]/g,'')+'.txt'; a.click();
+};
+
+// ---- 字号 ----
+function fs(v){ const r=document.documentElement; const cur=parseInt(getComputedStyle(r).getPropertyValue('--fs')); r.style.setProperty('--fs',Math.max(18,Math.min(56,cur+v))+'px'); }
+$('fm').onclick=()=>fs(-4); $('fp').onclick=()=>fs(4);
+</script>
+</body>
+</html>

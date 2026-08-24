@@ -1,0 +1,84 @@
+#!/bin/bash
+# 朋友式连续「打字」对话 —— chat 的文字版双胞胎（本地大脑 qwen3.6@8080）
+# chat=语音，ask=打字。带上下文、流式输出。退出: q / Ctrl-C；重置上下文: /reset
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+PORT=8080
+NAME="qwen3.6"
+
+# 确保大脑在线（检 model 名，不只检端口活着）
+if ! curl -s --max-time 2 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null | grep -q "$NAME"; then
+  echo "⚠️  大脑未启动，先运行: llm start"; exit 1
+fi
+
+# 单轮: ask 你的问题  → 答完退出（无上下文）；无参数 → 进连续对话
+ONESHOT="$*"
+
+read -r -d '' PYCODE <<'PY'
+import json, os, sys, urllib.request
+
+PORT = os.environ["PORT"]; NAME = os.environ["NAME"]
+URL  = f"http://127.0.0.1:{PORT}/v1/chat/completions"
+SYS  = "你是用户的本地助手，回答简洁、直接、用中文。"
+msgs = [{"role": "system", "content": SYS}]
+
+def stream(messages):
+    body = json.dumps({
+        "model": NAME, "messages": messages, "stream": True,
+        "max_tokens": 2000, "temperature": 0.7, "repetition_penalty": 1.1,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(URL, data=body, headers={"Content-Type": "application/json"})
+    out = []
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    d = json.loads(data)["choices"][0]["delta"]
+                    # thinking 已关：reasoning-parser 仍可能把答案放进 reasoning_content，
+                    # 两个字段都当正文（关思考时不存在真正的思考内容）
+                    delta = (d.get("content") or "") + (d.get("reasoning_content") or "")
+                except Exception:
+                    delta = ""
+                if delta:
+                    out.append(delta); sys.stdout.write(delta); sys.stdout.flush()
+    except Exception as e:
+        sys.stdout.write(f"\n⚠️  请求出错: {e}")
+    print()
+    return "".join(out)
+
+# 单轮
+oneshot = os.environ.get("ONESHOT", "").strip()
+if oneshot:
+    msgs.append({"role": "user", "content": oneshot})
+    stream(msgs)
+    sys.exit(0)
+
+# 连续对话 REPL
+print("⌨️  打字对话（本地 qwen3.6）。退出: q / Ctrl-C  ·  重置上下文: /reset")
+while True:
+    try:
+        line = input("\n你 › ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n再见 👋"); break
+    if not line:
+        continue
+    if line in ("q", "quit", "exit", "退出"):
+        print("再见 👋"); break
+    if line in ("/reset", "/clear", "重置"):
+        msgs[:] = [{"role": "system", "content": SYS}]
+        print("🧹 上下文已清空"); continue
+    msgs.append({"role": "user", "content": line})
+    print("\nqwen › ", end="", flush=True)
+    reply = stream(msgs)
+    msgs.append({"role": "assistant", "content": reply})
+PY
+
+# 用进程替换把代码当文件名传给 python，stdin 仍留给终端(REPL 的 input 用)
+PORT="$PORT" NAME="$NAME" ONESHOT="$ONESHOT" exec python3 <(printf '%s' "$PYCODE")

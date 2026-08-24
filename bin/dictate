@@ -1,0 +1,31 @@
+#!/bin/bash
+# 全局语音听写：切换式。第一次调用开始录音，第二次停止→转写→粘贴到当前光标处。
+# 配合热键使用（见 Hammerspoon 配置）。也可直接命令行 toggle。
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+PIDFILE=/tmp/dictate.pid
+WAV=/tmp/dictate.wav
+MIC="${VA_MIC:-MacBook Pro Microphone}"
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  # ---- 停止录音 → 转写 → 粘贴 ----
+  kill -INT "$(cat "$PIDFILE")" 2>/dev/null
+  rm -f "$PIDFILE"
+  sleep 0.3
+  osascript -e 'display notification "转写中…" with title "🎙️ 听写"' 2>/dev/null
+  TEXT=$(curl -s --max-time 30 http://127.0.0.1:8082/transcribe \
+    -X POST -H "Content-Type: application/json" \
+    -d "{\"path\":\"$WAV\",\"language\":\"zh\"}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('text',''))" 2>/dev/null)
+  if [ -n "$TEXT" ]; then
+    printf '%s' "$TEXT" | pbcopy
+    osascript -e 'tell application "System Events" to keystroke "v" using command down' 2>/dev/null
+    osascript -e "display notification \"$TEXT\" with title \"✅ 已输入\"" 2>/dev/null
+  else
+    osascript -e 'display notification "没听清" with title "⚠️ 听写"' 2>/dev/null
+  fi
+else
+  # ---- 开始录音 ----
+  osascript -e 'display notification "说话中… 再按热键结束" with title "🔴 听写录音"' 2>/dev/null
+  ffmpeg -y -f avfoundation -i ":$MIC" -ac 1 -ar 16000 "$WAV" >/dev/null 2>&1 &
+  echo $! > "$PIDFILE"
+fi

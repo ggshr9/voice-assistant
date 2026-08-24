@@ -1,0 +1,137 @@
+#!/bin/bash
+# 会议转写一键命令（本地 Qwen3-ASR-1.7B + 可选 pyannote 声纹 + 自动纪要）
+# 用法：
+#   meeting 录音.m4a              # 中文转写（+ 若 community-1 已就绪则分说话人）+ 自动纪要
+#   meeting 录音.m4a 3            # 指定 3 个说话人
+#   meeting 录音.m4a -            # 只转写，不分说话人
+#   meeting 录音.m4a - nominutes  # 转写但不生成纪要
+#   meeting 录音.m4a 2 --me 说话人1   # 告诉纪要哪个说话人是「我」→ 待办我的/他人才准
+#
+# 引擎：mlx-qwen3-asr（Qwen3-ASR-1.7B，2026 中文 SOTA，超过 whisper-large-v3）
+#   - 纯本地离线、词级时间戳；模型缓存后 RTF ~60x
+# 声纹分人：需 pyannote/speaker-diarization-community-1 已缓存 + HF_TOKEN
+#   - 没缓存会自动降级为纯转写（首次启用：网页同意条款后让我帮你下）
+
+set -e
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export HF_ENDPOINT=https://huggingface.co   # 直连官方（门控/Xet 不走镜像）
+
+FILE="$1"
+SPEAKERS="$2"
+ASR_MODEL="${MEETING_MODEL:-Qwen/Qwen3-ASR-1.7B}"   # MEETING_MODEL=Qwen/Qwen3-ASR-0.6B 可换轻量
+
+# 抽出 --me <说话人>（传给 minutes，让待办区分我的/他人）
+ME=""
+for ((i=1; i<=$#; i++)); do
+  if [ "${!i}" = "--me" ]; then j=$((i+1)); ME="${!j}"; fi
+done
+
+if [ -z "$FILE" ]; then
+  echo "用法: meeting <音频/视频文件> [说话人数 | - 表示不分人] [nominutes]"
+  exit 1
+fi
+
+# 绝对路径 + 输出目录
+FILE="$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")"
+WORKDIR="$(dirname "$FILE")"
+OUT="$WORKDIR/转写_$(basename "${FILE%.*}")"
+mkdir -p "$OUT"
+
+# 清掉上一轮残留的 _annotated.txt：只有本轮 ≥2 人时才会重新生成；
+# 否则旧文件会被 minutes 错误优先，导致单人/重转写还读到上次的说话人标注
+rm -f "$OUT"/*_annotated.txt 2>/dev/null || true
+
+ARGS=(--model "$ASR_MODEL" --language Chinese --output-dir "$OUT" --output-format all)
+
+# 是否具备声纹分人条件：用户没明确关闭 + 有 HF_TOKEN + community-1 已缓存
+have_diar() { ls "$HOME"/.cache/huggingface/hub/*speaker-diarization-community*/snapshots/*/config.yaml >/dev/null 2>&1; }
+
+DIARIZE=0
+if [ "$SPEAKERS" = "-" ]; then
+  echo "▶ 转写（不分说话人，$ASR_MODEL）"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1        # 纯转写可离线
+elif [ -z "$HF_TOKEN" ]; then
+  echo "▶ 转写（未设 HF_TOKEN，不分说话人）"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+elif ! have_diar; then
+  echo "▶ 转写（本地无 community-1 分人模型，暂不分说话人）"
+  echo "  ℹ️  想要声纹分人？先在 https://hf.co/pyannote/speaker-diarization-community-1 同意条款，再让我帮你下。"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+else
+  DIARIZE=1
+  ARGS+=(--diarize)
+  [ -n "$SPEAKERS" ] && ARGS+=(--num-speakers "$SPEAKERS")
+  echo "▶ 转写 + 声纹分人（$ASR_MODEL + community-1）"
+  # 分人走 pyannote，需联网做 HEAD 校验（直连官方）；缓存命中后很快
+fi
+
+echo "  文件: $FILE"
+# 跑转写；若开了分人却失败，自动降级纯转写离线重试
+if ! mlx-qwen3-asr "$FILE" "${ARGS[@]}"; then
+  if [ "$DIARIZE" = 1 ]; then
+    echo "⚠️ 声纹分人失败，降级为纯转写重试…"
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+      mlx-qwen3-asr "$FILE" --model "$ASR_MODEL" --language Chinese \
+        --output-dir "$OUT" --output-format all
+  else
+    echo "❌ 转写失败。"; exit 1
+  fi
+fi
+
+echo ""
+echo "✅ 转写完成，结果在: $OUT/"
+ls "$OUT" 2>/dev/null
+
+# —— 分人后：从 json 的逐字 speaker 标签，按说话人轮次合成带标注的 _annotated.txt ——
+# （Qwen3-ASR 只把 speaker 写进 json，txt/srt 是纯文本；minutes 读不到说话人，这里补上）
+if [ "$DIARIZE" = 1 ]; then
+  JSON="$(ls "$OUT"/*.json 2>/dev/null | head -1)"
+  if [ -n "$JSON" ]; then
+    OUT="$OUT" JSON="$JSON" python3 - <<'PY'
+import json, os
+out = os.environ["OUT"]; jf = os.environ["JSON"]
+d = json.load(open(jf, encoding="utf-8"))
+segs = d.get("segments") or []
+if any(s.get("speaker") for s in segs):
+    # 逐字 segment 按连续相同 speaker 合并成「轮次」
+    turns, cur, sp = [], "", None
+    for s in segs:
+        spk = s.get("speaker") or "SPEAKER_?"
+        if spk != sp and cur:
+            turns.append((sp, cur)); cur = ""
+        sp = spk; cur += s.get("text", "")
+    if cur: turns.append((sp, cur))
+    # SPEAKER_00 → 说话人A …（稳定映射；字母匿名牌，会后认出谁是谁再替换）
+    import string
+    order, name = {}, {}
+    for spk, _ in turns:
+        if spk not in order:
+            i = len(order)
+            order[spk] = i + 1
+            name[spk] = f"说话人{string.ascii_uppercase[i]}" if i < 26 else f"说话人{i + 1}"
+    if len(order) >= 2:
+        # 多人才写标注版（segment 文本无标点，单人时不如带标点的纯 txt）
+        lines = [f"{name[spk]}：{txt}" for spk, txt in turns]
+        base = os.path.splitext(os.path.basename(jf))[0]
+        ann = os.path.join(out, base + "_annotated.txt")
+        open(ann, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        print(f"🗣  已按说话人合成: {os.path.basename(ann)}（{len(order)} 人）")
+    else:
+        print(f"🗣  仅检出 1 个说话人，纪要用带标点原文")
+PY
+  fi
+fi
+
+# 分了人但没说"我是谁"：提示如何让待办准确区分我的/他人（重跑 minutes 很快）
+if [ -z "$ME" ] && ls "$OUT"/*_annotated.txt >/dev/null 2>&1; then
+  echo ""
+  echo "💡 已分出多个说话人。想让纪要待办准确区分「我的/他人」？"
+  echo "   先看下面 annotated 里哪个是你，再跑(几秒)：minutes \"$OUT\" --me 说话人A"
+fi
+
+# —— 闭环：转写完自动生成结构化纪要（本地 LLM）——
+if [ "$2" != "nominutes" ] && [ "$3" != "nominutes" ] && command -v minutes >/dev/null 2>&1; then
+  echo ""
+  echo "▶ 自动生成会议纪要（本地 Qwen3.6）…"
+  minutes "$OUT" ${ME:+--me "$ME"}
+fi

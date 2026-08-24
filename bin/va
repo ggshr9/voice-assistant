@@ -1,0 +1,20 @@
+#!/bin/bash
+# 启动本地语音助手（自动拉起 TTS 服务）
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 确保 Kokoro TTS 服务在线（8081）
+if ! curl -s --max-time 2 http://127.0.0.1:8081/v1/models >/dev/null 2>&1; then
+  echo "🔊 启动 TTS 服务（Kokoro）…"
+  nohup env HF_ENDPOINT=https://hf-mirror.com mlx_audio.server --host 127.0.0.1 --port 8081 > ~/.tts-server.log 2>&1 &
+  echo "$!" > ~/.tts-server.pid
+  n=0; until curl -s --max-time 2 http://127.0.0.1:8081/v1/models >/dev/null 2>&1 || [ $n -ge 20 ]; do sleep 2; n=$((n+1)); done
+fi
+
+# 检查大脑（LLM）
+if ! curl -s --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1; then
+  echo "⚠️ 大脑未启动，先运行: llm start"
+  exit 1
+fi
+
+exec uv run "$HOME/voice-assistant/assistant.py"

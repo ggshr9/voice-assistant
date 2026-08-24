@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+minutes — 把会议转写文本变成结构化纪要（全本地，喂 vllm-mlx Qwen3.6）
+
+用法:
+  minutes <转写目录|.txt|.json>     # 生成纪要 Markdown
+  minutes <转写目录> --me 说话人1   # 告诉它哪个说话人是「我」→ 待办「我的/他人」才准
+  minutes <转写目录> --say          # 生成后用本地 TTS 念一句话摘要
+  minutes <转写目录> --open         # 生成后用默认程序打开
+
+输出: 在转写文件同目录写 纪要_<名字>.md，并打印路径。
+
+特性:
+  - 全程本地：转写文本 → http://127.0.0.1:8080/v1（Qwen3.6-8bit）→ 纪要，不联网
+  - 大脑没起会自动 `llm start` 并等待加载
+  - 长会议自动分块（map-reduce）：先逐块记笔记，再汇总成纪要
+  - 待办自动区分「我的」和「他人」
+"""
+import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
+
+API = "http://127.0.0.1:8080/v1/chat/completions"
+HEALTH = "http://127.0.0.1:8080/v1/models"
+MODEL = "qwen3.6"
+CHUNK_CHARS = 12000      # 超过这个长度就分块
+SINGLE_MAX = 20000       # 单次直读上限（约 20k token，中文 ~1 字/token）
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+# ---------- 找转写文本 ----------
+def find_transcript(path):
+    """接收 目录 / .txt / .json，返回 (纯文本, 来源文件名)。优先带说话人标注的版本。"""
+    if os.path.isdir(path):
+        # 优先级：annotated.txt > _zh.txt > 任意 .txt > .json
+        # 递归找：whisply 会把结果放进 转写_xxx/xxx/ 这样的嵌套子目录
+        def rglob(pat):
+            return sorted(glob.glob(os.path.join(path, "**", pat), recursive=True))
+        cands = (rglob("*_annotated.txt") or rglob("*_zh.txt") or rglob("*.txt"))
+        if cands:
+            return read_txt(cands[0]), os.path.basename(cands[0])
+        js = rglob("*.json")
+        if js:
+            return read_json(js[0]), os.path.basename(js[0])
+        log(f"⚠️ 目录里没找到转写文本: {path}"); sys.exit(1)
+    elif path.endswith(".json"):
+        return read_json(path), os.path.basename(path)
+    elif os.path.isfile(path):
+        return read_txt(path), os.path.basename(path)
+    else:
+        log(f"⚠️ 找不到: {path}"); sys.exit(1)
+
+def read_txt(fp):
+    with open(fp, encoding="utf-8") as f:
+        return f.read().strip()
+
+def read_json(fp):
+    """从 whisply 的 .json 里抽出带说话人的文本（若有），否则纯文本。"""
+    with open(fp, encoding="utf-8") as f:
+        data = json.load(f)
+    tr = data.get("transcription", {})
+    for lang, t in tr.items():
+        if "text_with_speaker_annotation" in t:
+            return t["text_with_speaker_annotation"].strip()
+    for lang, t in tr.items():
+        if t.get("text"):
+            return t["text"].strip()
+    return json.dumps(data, ensure_ascii=False)[:SINGLE_MAX]
+
+# ---------- 大脑 ----------
+def ensure_llm():
+    if health_ok():
+        return
+    log("⚙️  本地大脑未运行，正在 `llm start`（8bit 38GB，加载可能要 1-3 分钟）…")
+    subprocess.run(["llm", "start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for i in range(120):                 # 最多等 4 分钟（含显存被占后的慢加载）
+        time.sleep(2)
+        if health_ok():
+            log("✅ 大脑已就绪"); return
+    log("❌ 大脑 4 分钟内没起来，看 `llm log`"); sys.exit(1)
+
+def health_ok():
+    # 必须是真大脑：/v1/models 要含 qwen3.6。否则你的 go server 占了 8080 也会
+    # 返回 200，误判「已就绪」后请求全失败。
+    try:
+        with urllib.request.urlopen(HEALTH, timeout=3) as r:
+            return MODEL in r.read().decode("utf-8", "ignore")
+    except Exception:
+        return False
+
+def ask(system, user, max_tokens=2200, temperature=0.3, think=False):
+    body = {
+        "model": MODEL,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "repetition_penalty": 1.1,                       # 防 8bit 重复退化
+        "chat_template_kwargs": {"enable_thinking": think},  # 还原任务开思考(reasoning-parser 会把思考分到独立字段，content 仍干净)
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    req = urllib.request.Request(
+        API, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                out = json.load(r)
+            content = out["choices"][0]["message"].get("content") or ""
+            # 偶发关不干净的思考标签，剥掉
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+            content = re.sub(r"^<think>.*$", "", content, flags=re.S).strip()
+            if content:
+                return content
+        except Exception as e:
+            log(f"  (第{attempt+1}次请求失败: {e}，重试)")
+            time.sleep(2)
+    log("❌ 大脑没返回内容"); sys.exit(1)
+
+# ---------- 分块 ----------
+def split_chunks(text, size=CHUNK_CHARS):
+    """按段落/句子边界切，尽量不切断说话人轮次。"""
+    if len(text) <= size:
+        return [text]
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > size and cur:
+            parts.append(cur); cur = ""
+        cur += line + "\n"
+        # 单行就超长（极少）时硬切
+        while len(cur) > size:
+            parts.append(cur[:size]); cur = cur[size:]
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+NOTE_SYS = ("你是会议记录助理。把这段会议转写片段提炼成要点笔记，"
+            "保留：讨论的话题、各方观点、做出的决定、提到的待办和负责人、数字与时间。"
+            "用简洁中文分条列出，不要寒暄，不要总结成段落。")
+
+FINAL_SYS = ("你是资深会议纪要撰写者。基于提供的会议内容，输出一份结构化中文纪要 Markdown。"
+             "严格按以下结构，不要加额外标题、不要寒暄、不要编造没提到的信息：\n\n"
+             "## 一句话摘要\n（一句话说清这次会议的核心）\n\n"
+             "## 关键决议\n- （逐条列出明确做出的决定；没有就写「本次无明确决议」）\n\n"
+             "## 待办事项\n"
+             "用表格：| 事项 | 负责人 | 期限 |，负责人是「我」的标注为 **我**；没提期限写「—」。\n\n"
+             "## 讨论要点\n按话题分小节，每个话题下用要点列出各方观点。\n\n"
+             "## 风险 / 待澄清\n- （遗留问题、分歧、需后续确认的点；没有就省略本节）\n")
+
+def make_minutes(text, me=None):
+    final_sys = FINAL_SYS
+    if me:
+        final_sys += (f"\n\n**重要**：转写中标记为「{me}」的说话人就是「我」本人。"
+                      f"在「待办事项」表格里，「{me}」名下要做的事，负责人一律写 **我**；"
+                      f"其他说话人写其代号或姓名，不要写「我」。")
+    chunks = split_chunks(text)
+    if len(chunks) == 1:
+        log("📝 单次生成纪要 …")
+        return ask(final_sys, "会议转写如下：\n\n" + text, max_tokens=2600)
+    # map-reduce
+    log(f"📝 会议较长，分 {len(chunks)} 块逐块记笔记 …")
+    notes = []
+    for i, c in enumerate(chunks, 1):
+        log(f"   块 {i}/{len(chunks)} …")
+        notes.append(f"【片段{i}】\n" + ask(NOTE_SYS, c, max_tokens=1200))
+    log("📝 汇总成纪要 …")
+    joined = "\n\n".join(notes)
+    return ask(final_sys, "以下是按时间顺序的会议要点笔记，请汇总成完整纪要：\n\n" + joined,
+               max_tokens=2600)
+
+
+# ---------- 会议记录（LLM 忠实还原，不概括）----------
+RECORD_CHARS = 3000      # 还原是逐句输出≈等长，块要小、max_tokens 要大（防截断）
+
+RECORD_SYS = (
+    "你在整理会议的【逐字记录】，不是写摘要。输入是会议语音转写，"
+    "有识别错误、噪音字、缺标点、口水重复，每行以「说话人X：」标注说话人。\n"
+    "请尽量把它【还原】成可读的对话记录，规则：\n"
+    "1) 逐行保留每个说话人说的全部内容，不概括、不删减、不合并不同人的话；顺序不变；\n"
+    "2) 补标点、修同音字、删掉「嘶嘶嘶」这类纯噪音和明显口水重复，让句子通顺；\n"
+    "3) **听不清/拿不准/疑似听岔的地方，必须就地加「[?…]」写出你的判断或存疑** —— 这是标注你的理解，不算编造，鼓励多标；\n"
+    "   例：听到「马内几次」→「[?疑为'某地区']」；整段含糊→「[?听不清]」；\n"
+    "4) 不要凭空添加没出现过的句子；\n"
+    "5) 严格按「说话人X：内容」逐行输出，不要加标题/说明。\n\n"
+    "示例——\n"
+    "输入：\n"
+    "说话人A：好现在打给他OK嘶嘶嘶嘶嘶嘶\n"
+    "说话人C：嘶嘶嘶嘶嗯是马内几次你吃不要那么吃吃有点太多\n"
+    "输出：\n"
+    "说话人A：好，现在打给他，OK。\n"
+    "说话人C：嗯，是。[?听不清，疑为'某地区']你吃不吃？不要那么……吃有点太多。[?这段含糊]")
+
+
+def _denoise(text):
+    """机械预清洗:同一个字重复≥3次的串折成一个、去掉清完后空白的行。先于 LLM 跑,保证噪音不靠模型自觉。"""
+    import re
+    out = []
+    for ln in text.split("\n"):
+        m = re.match(r"^(说话人[A-Z0-9]+：)(.*)$", ln)
+        prefix, content = (m.group(1), m.group(2)) if m else ("", ln)
+        content = re.sub(r"(.)\1{2,}", r"\1", content)      # 嘶嘶嘶嘶→嘶, 嗯嗯嗯→嗯
+        if re.sub(r"[，。！？、\s,.!?]", "", content):
+            out.append(prefix + content)
+    return "\n".join(out)
+
+
+def make_record(text):
+    """把带说话人的转写，LLM 忠实还原成可读逐字记录(先机械去噪→分块逐块还原→不汇总)。"""
+    text = _denoise(text)
+    chunks = split_chunks(text, size=RECORD_CHARS)
+    parts = []
+    for i, c in enumerate(chunks, 1):
+        log(f"   记录块 {i}/{len(chunks)} …")
+        parts.append(ask(RECORD_SYS, c, max_tokens=5000).strip())  # 不开思考(开了会把思考过程漏进正文);靠 few-shot 引导 [?] 标注
+    return "\n".join(parts)
+
+# ---------- TTS（可选）----------
+def say_summary(md):
+    m = re.search(r"##\s*一句话摘要\s*\n+(.+)", md)
+    summary = (m.group(1).strip() if m else md[:80]).lstrip("（(").rstrip("）)")
+    try:
+        # 复用语音助手的克隆音服务（8083），失败就用系统 say
+        body = json.dumps({"text": summary}).encode()
+        req = urllib.request.Request("http://127.0.0.1:8083/tts",
+                                     data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            audio = r.read()
+        tmp = "/tmp/minutes_say.wav"
+        with open(tmp, "wb") as f:
+            f.write(audio)
+        subprocess.run(["afplay", tmp])
+    except Exception:
+        subprocess.run(["say", "-v", "Tingting", summary])
+
+# ---------- 主流程 ----------
+def main():
+    args = [a for a in sys.argv[1:]]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); sys.exit(0)
+    # 先抽出带值的 --me（否则它的值会被当成位置参数 / 转写目录）
+    me, rest, i = None, [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--me":
+            i += 1; me = args[i] if i < len(args) else None
+        elif a.startswith("--me="):
+            me = a.split("=", 1)[1]
+        else:
+            rest.append(a)
+        i += 1
+    args = rest
+    flags = {a for a in args if a.startswith("--")}
+    pos = [a for a in args if not a.startswith("--")]
+    if not pos:
+        log("用法: minutes <转写目录|.txt|.json> [--say] [--open]"); sys.exit(1)
+    target = os.path.expanduser(pos[0])
+
+    text, src = find_transcript(target)
+    if len(text) < 20:
+        log("⚠️ 转写文本太短，可能转写失败。"); sys.exit(1)
+    log(f"📄 来源: {src}（{len(text)} 字）")
+
+    if me:
+        log(f"🙋 已指定「{me}」为我本人，待办将据此区分我的/他人")
+    ensure_llm()
+    md = make_minutes(text, me)
+
+    # 决定输出路径
+    base_dir = target if os.path.isdir(target) else os.path.dirname(target) or "."
+    name = re.sub(r"^转写_", "", os.path.basename(os.path.normpath(base_dir)))
+    name = re.sub(r"_zh.*$|\.txt$|\.json$", "", name) or "会议"
+    out = os.path.join(base_dir, f"纪要_{name}.md")
+
+    header = f"# 会议纪要 · {name}\n\n> 来源转写：`{src}`　|　生成：本地 Qwen3.6（vllm-mlx）\n\n"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(header + md + "\n")
+    log("✅ 纪要已生成:")
+    print(out)
+
+    # 会议记录（LLM 忠实还原全程对话）；--norecord 跳过
+    rec_out = None
+    if "--norecord" not in flags:
+        log("📓 生成会议记录（忠实还原全程对话，长会议较慢）…")
+        record = make_record(text)
+        rec_out = os.path.join(base_dir, f"会议记录_{name}.md")
+        rec_header = (f"# 会议记录 · {name}\n\n> 来源转写：`{src}`　|　"
+                      f"忠实还原：本地 Qwen3.6（`[?…]` 为存疑标注，待人工确认）\n\n")
+        with open(rec_out, "w", encoding="utf-8") as f:
+            f.write(rec_header + record + "\n")
+        log("✅ 会议记录已生成:")
+        print(rec_out)
+
+    if "--say" in flags:
+        say_summary(md)
+    if "--open" in flags:
+        subprocess.run(["open", out])
+        if rec_out:
+            subprocess.run(["open", rec_out])
+
+if __name__ == "__main__":
+    main()

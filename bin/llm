@@ -1,0 +1,126 @@
+#!/bin/bash
+# 本地统一大脑服务（vllm-mlx + Qwen3.6-35B-8bit）
+# 一个端口同时提供：文字 + 视觉(看图/OCR) + 工具调用 + OpenAI格式 + Anthropic格式
+#
+# 端点:
+#   OpenAI:    http://127.0.0.1:8080/v1          (语音助手/看图问答/agent)
+#   Anthropic: http://127.0.0.1:8080/v1/messages (Claude Code 直连，免 proxy)
+#
+# 用法:
+#   llm start | stop | status | log | watch | test | vision <图片>
+#   watch = 实时滚动显示请求(⚡ qwen3.6 = 本地工/子agent 正在干活)
+#
+# 注意: 调用时建议带 chat_template_kwargs:{enable_thinking:false} 关思考，
+#       并加 repetition_penalty:1.1~1.15 防 8bit 重复退化。
+
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export HF_ENDPOINT=https://hf-mirror.com
+
+MODEL="$HOME/models/Qwen3.6-35B-A3B-8bit"
+NAME="qwen3.6"
+PORT=8080
+PIDFILE="$HOME/.vllm-mlx.pid"
+LOG="$HOME/.vllm-mlx.log"
+
+# 真大脑检测：/v1/models 必须返回含 qwen3.6 的内容。
+# 不能只看「端口活着」——用户的 go server 也监听 8080，会返回 404 但 curl 退出码 0，
+# 导致误判「已在运行」而不启动真大脑（minutes 随后连不上）。
+brain_ok() {
+  curl -s --max-time 3 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null | grep -q "$NAME"
+}
+port_busy() { lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1; }
+
+case "$1" in
+  start)
+    if brain_ok; then
+      echo "✅ 已在运行: http://127.0.0.1:$PORT/v1"; exit 0
+    fi
+    if port_busy; then
+      echo "⚠️ 端口 $PORT 被占用，但不是本地大脑（可能是你的 go server）。"
+      echo "   排查: lsof -nP -iTCP:$PORT -sTCP:LISTEN"
+      echo "   先停掉占用进程或换端口，再 llm start。"
+      exit 1
+    fi
+    echo "🚀 启动统一大脑 (vllm-mlx, 8bit, 多模态)…"
+    nohup vllm-mlx serve "$MODEL" --host 127.0.0.1 --port $PORT \
+      --served-model-name "$NAME" --mllm --trust-remote-code \
+      --default-chat-template-kwargs '{"enable_thinking": true}' \
+      --reasoning-parser qwen3 \
+      --enable-auto-tool-choice --tool-call-parser qwen3_coder > "$LOG" 2>&1 &
+    echo "$!" > "$PIDFILE"
+    echo "   PID $!  端点 http://127.0.0.1:$PORT/v1  （8bit 加载约 30-60 秒）"
+    ;;
+  stop)
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    pkill -f "vllm-mlx serve" 2>/dev/null
+    echo "🛑 已停止"
+    ;;
+  status)
+    if brain_ok; then
+      echo "✅ 运行中: http://127.0.0.1:$PORT/v1"
+      grep -iE "MLLM=" "$LOG" 2>/dev/null | tail -1
+      curl -s "http://127.0.0.1:$PORT/v1/models" 2>/dev/null | python3 -c "import sys,json;[print(' 模型:',m['id']) for m in json.load(sys.stdin).get('data',[])]" 2>/dev/null
+    elif port_busy; then
+      echo "⚠️ 端口 $PORT 被别的进程占用，不是本地大脑（你的 go server？）"
+      echo "   lsof -nP -iTCP:$PORT -sTCP:LISTEN"
+    else
+      echo "⚠️ 未运行（或还在加载）。看日志: llm log"
+    fi
+    ;;
+  log)
+    tail -n 25 -f "$LOG"
+    ;;
+  watch)
+    echo "👀 监看本地大脑请求 (Ctrl-C 退出) — 蹦出 ⚡ qwen3.6 = 本地工正在干活"
+    echo "─────────────────────────────────────────────"
+    tail -n 0 -f "$LOG" | python3 -u -c '
+import sys, re, time
+for line in sys.stdin:
+    if "[REQUEST] POST" in line:
+        mep = re.search(r"POST (/\S+)", line)
+        mmodel = re.search(r"model=.([^\x27\"]+)", line)
+        ep = mep.group(1) if mep else "?"
+        model = mmodel.group(1) if mmodel else "?"
+        parts = []
+        mn = re.search(r"(?:items|msgs)=(\d+)", line)
+        mt = re.search(r"tools=(\d+)", line)
+        if mn: parts.append("items=" + mn.group(1))
+        if mt: parts.append("tools=" + mt.group(1))
+        ts = time.strftime("%H:%M:%S")
+        info = (", ".join(parts))
+        print("⚡ " + ts + "  " + model + " ← " + ep + ("  (" + info + ")" if info else ""), flush=True)
+    else:
+        m = re.search(r"(\d+) tokens in ([\d.]+)s.*?([\d.]+) tok/s", line)
+        if m:
+            print("   ✓ " + m.group(1) + " tokens · " + m.group(2) + "s · " + m.group(3) + " tok/s", flush=True)
+'
+    ;;
+  test)
+    echo "🧪 测试文字 + 工具调用…"
+    curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H "Content-Type: application/json" -d "{
+      \"model\":\"$NAME\",\"max_tokens\":200,
+      \"chat_template_kwargs\":{\"enable_thinking\":false},
+      \"messages\":[{\"role\":\"user\",\"content\":\"北京天气怎么样？用工具查\"}],
+      \"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"查天气\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]
+    }" | python3 -c "import sys,json;m=json.load(sys.stdin)['choices'][0]['message'];tc=m.get('tool_calls');print('✅ 工具:',tc[0]['function'] if tc else '文字:'+(m.get('content') or '')[:80])"
+    ;;
+  vision)
+    IMG="$2"
+    [ -f "$IMG" ] || { echo "用法: llm vision <图片路径>"; exit 1; }
+    B64=$(base64 -i "$IMG")
+    echo "🖼️ 识别图片: $IMG"
+    curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H "Content-Type: application/json" -d "{
+      \"model\":\"$NAME\",\"max_tokens\":400,\"temperature\":0.3,\"repetition_penalty\":1.1,
+      \"chat_template_kwargs\":{\"enable_thinking\":false},
+      \"messages\":[{\"role\":\"user\",\"content\":[
+        {\"type\":\"text\",\"text\":\"${3:-详细描述这张图的内容和文字}\"},
+        {\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,$B64\"}}
+      ]}]
+    }" | python3 -c "import sys,json;print('🤖',json.load(sys.stdin)['choices'][0]['message'].get('content',''))"
+    ;;
+  *)
+    echo "用法: llm {start|stop|status|log|watch|test|vision <图片>}"
+    echo "OpenAI 端点: http://127.0.0.1:8080/v1"
+    echo "Anthropic 端点: http://127.0.0.1:8080/v1/messages (Claude Code 可直连)"
+    ;;
+esac

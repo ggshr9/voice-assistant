@@ -1,0 +1,30 @@
+#!/bin/bash
+# 朋友式连续语音对话「小麦」（VAD 免按键，克隆音）
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export HF_ENDPOINT=https://hf-mirror.com
+export UV_HTTP_TIMEOUT=180
+
+# 确保依赖服务在线
+if ! curl -s --max-time 2 http://127.0.0.1:8080/v1/models >/dev/null 2>&1; then
+  echo "⚠️ 大脑未启动，先运行: llm start"; exit 1
+fi
+if ! curl -s --max-time 2 -X POST http://127.0.0.1:8081/v1/models >/dev/null 2>&1 && \
+   ! curl -s --max-time 2 http://127.0.0.1:8081/v1/models >/dev/null 2>&1; then
+  echo "🔊 启动 TTS 服务…"
+  nohup env HF_ENDPOINT=https://hf-mirror.com mlx_audio.server --host 127.0.0.1 --port 8081 > ~/.tts-server.log 2>&1 &
+  sleep 8
+fi
+if ! curl -s --max-time 2 -X POST http://127.0.0.1:8082/transcribe -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1; then
+  echo "👂 启动 STT 服务…"
+  nohup env UV_HTTP_TIMEOUT=180 uv run "$HOME/voice-assistant/stt_server.py" > ~/.stt-server.log 2>&1 &
+  n=0; until curl -s --max-time 2 -X POST http://127.0.0.1:8082/transcribe -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || [ $n -ge 40 ]; do sleep 3; n=$((n+1)); done
+fi
+
+# 克隆音服务（默认声音；VA_TTS=kokoro 时不需要）
+if [ "${VA_TTS:-clone}" = "clone" ] && ! curl -s --max-time 2 http://127.0.0.1:8083/speak -X POST -H 'Content-Type: application/json' -d '{"text":""}' >/dev/null 2>&1; then
+  echo "🎭 启动克隆音服务(Qwen3-TTS，加载约30秒)…"
+  nohup env HF_ENDPOINT=https://hf-mirror.com UV_HTTP_TIMEOUT=180 uv run "$HOME/voice-assistant/clone_tts_server.py" > ~/.clone-tts.log 2>&1 &
+  n=0; until grep -q "服务就绪" ~/.clone-tts.log 2>/dev/null || [ $n -ge 40 ]; do sleep 3; n=$((n+1)); done
+fi
+
+exec uv run "$HOME/voice-assistant/chat.py"

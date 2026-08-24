@@ -1,0 +1,40 @@
+#!/bin/bash
+# 声音克隆（IndexTTS）：用一段参考录音的音色，说任意新内容
+# 用法：
+#   clone "参考录音.wav" "参考录音里说的原文" "你想让它说的新内容"
+# 例：
+#   clone ~/我的声音.wav "大家好我是张三今天天气很好" "欢迎使用我的专属语音助手"
+#
+# 想用自己的声音：先 rec 录 10 秒，再把文件和你说的话传进来。
+
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+MODEL=~/models/IndexTTS-1.5
+
+REF="$1"; REFTEXT="$2"; TEXT="$3"
+if [ -z "$REF" ] || [ -z "$REFTEXT" ] || [ -z "$TEXT" ]; then
+  echo "用法: clone <参考录音> <参考原文> <要生成的新内容>"
+  echo "例:   clone ~/voice.wav \"我说的原话\" \"让它念的新话\""
+  exit 1
+fi
+[ -f "$REF" ] || { echo "❌ 找不到参考录音: $REF"; exit 1; }
+
+# 统一转成 24kHz 单声道 wav（兼容 m4a/mp3/wav 等任意输入）
+REFWAV=$(mktemp /tmp/cloneref_XXXX.wav)
+ffmpeg -y -i "$REF" -ar 24000 -ac 1 "$REFWAV" >/dev/null 2>&1
+
+OUT=~/Desktop/克隆语音
+mkdir -p "$OUT"
+TS=$(date +%H%M%S)
+cd "$OUT"
+echo "🎙️ 克隆中（音色来自: $(basename "$REF")）…"
+mlx_audio.tts.generate --model "$MODEL" --ref_audio "$REFWAV" --ref_text "$REFTEXT" \
+  --text "$TEXT" --file_prefix "clone_$TS" --output_path "$OUT" 2>&1 | grep -iE "successfully|error" | tail -2
+rm -f "$REFWAV"
+
+f=$(ls -t "$OUT"/clone_${TS}*.wav 2>/dev/null | head -1)
+if [ -n "$f" ]; then
+  echo "✅ 完成: $f"
+  afplay "$f"   # 自动播放
+else
+  echo "❌ 生成失败"
+fi
