@@ -48,6 +48,13 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 > ⚠️ 网页版是**面向 GPU 服务器**写的：走 `~/voice-svc` 下的 venv、faster-whisper + pyannote + CUDA，纪要走 litellm 网关。与本机 MLX 那套是两条独立实现，本机目前没有 `~/voice-svc`，跑不起来。
 
+## 常驻服务（LaunchAgent）
+
+`launchagents/` 里两个 plist，`cp` 到 `~/Library/LaunchAgents/` 后 `launchctl load` 即可：
+
+- `com.local.meeting-app.plist` — 菜单栏 App（`RunAtLoad=false`，由菜单项按需启停）
+- `com.local.caption.plist` — 实时字幕，菜单栏「🌐 实时字幕」开关它
+
 ## 配置
 
 所有外部地址与 key 都走环境变量，仓库内不含任何凭据：

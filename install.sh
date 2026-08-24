@@ -20,5 +20,5 @@ for src in "$REPO"/bin/*; do
 done
 
 echo
-echo "完成。确认 PATH 里有 $DEST："
+echo "完成。确认 PATH 里包含: $DEST"
 echo '  export PATH="$HOME/.local/bin:$PATH"'

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.local.meeting-app</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"; export HF_TOKEN="$(/bin/zsh -ic 'print -r -- $HF_TOKEN' 2>/dev/null | tail -1)"; exec uv run "$HOME/voice-assistant/meeting_app.py"</string>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>KeepAlive</key><false/>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>__HOME__/.meeting-app.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.meeting-app.log</string>
+</dict>
+</plist>

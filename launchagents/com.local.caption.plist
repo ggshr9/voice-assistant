@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CAPTION_STT_MODE</key>
+		<string>path</string>
+		<key>CAPTION_STT_URL</key>
+		<string>http://127.0.0.1:18091/transcribe</string>
+	</dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.local.caption</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"; exec "$HOME/.local/bin/caption"</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/.caption.log</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/.caption.log</string>
+</dict>
+</plist>
