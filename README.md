@@ -9,6 +9,7 @@
 |---|---|---|
 | **CLI** | `bin/` | 主力。`rec` 录音 → `meeting` 转写分人 → `minutes` 出纪要 |
 | **菜单栏 App** | `meeting_app.py` | macOS 顶栏 🎙️ 图标，点两下出纪要。只是壳，内部仍调 CLI |
+| **MCP** | `bin/meetings_mcp.py` | 让 agent（Claude Code 等）直接查会议档案，4 个工具 |
 | **网页版** | `web/` | 浏览器共享标签页声音 → 实时字幕；上传音频 → 会议纪要（服务器 CUDA 版，见下） |
 
 ## 快速开始
@@ -50,6 +51,25 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 每场会一行：标题（本地大脑起的）、日期、时长、说话人数、待办数（我的）、一句话摘要、路径。json 是真源，md 由它渲染。
 
 **为什么不上向量库**：会议是几十到几百场量级，全部摘要加起来才几 KB，本来就塞得进上下文；而检索真正需要的是「读懂」不是「找相似」。多一个嵌入模型 + 索引库，换不来准确率，只增加两个会坏的东西。
+
+### MCP server（给 agent 用）
+
+```bash
+claude mcp add -s user meetings -- python3 ~/voice-assistant/bin/meetings_mcp.py
+```
+
+stdlib 手写 JSON-RPC 2.0 over stdio，不依赖 mcp SDK，零外部依赖（同 `wxvault_mcp.py` 的路子）。4 个工具：
+
+| 工具 | 用途 | 需要大脑 |
+|---|---|---|
+| `list_meetings(query?, limit?)` | 列会议，可按标题/摘要过滤 | 否 |
+| `get_meeting(id, part?)` | 取纪要 / 逐字记录 / 转写原文；id 支持标题或日期片段模糊定位 | 否 |
+| `search_meetings(query, limit?)` | 转写全文字面检索，返回命中上下文 | 否 |
+| `ask_meetings(question, top?)` | 自然语言问答，两段式检索后作答并标出处 | ✅ `llm start` |
+
+`search` 和 `ask` 是互补的，别只留一个：前者精确、秒回，适合「谁提过 某支付平台」这种找原话；后者要过大脑、十几秒，适合「当时结论是什么」这种需要读懂再归纳的。
+
+**全部同步秒回** —— 转写/纪要是 `meeting` 和 `minutes` 离线跑完的成品，MCP 只读，所以不需要异步 job + 轮询那套。
 
 ### 本机服务（Python）
 - `stt_server.py` — 常驻 STT（mlx-whisper large-v3-turbo），`:8082/transcribe`
@@ -111,6 +131,7 @@ uv run tests/test_minutes.py           # 纪要分块/去噪/文件定位/待办
 uv run tests/test_annotate.py          # 词级 segment → 说话人标注稿的拼接规则
 uv run tests/test_index.py             # 会议索引：解析纪要/起标题/去重/渲染
 uv run tests/test_recall.py            # 检索：目录渲染/抠编号/关键词兜底/拼上下文
+uv run tests/test_mcp.py               # MCP 协议握手/工具分发/错误路径
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）
 uv run tests/test_caption_core.py      # 字幕纯逻辑
