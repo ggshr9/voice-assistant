@@ -18,7 +18,11 @@ export HF_ENDPOINT=https://huggingface.co   # 直连官方（门控/Xet 不走�
 
 FILE="$1"
 SPEAKERS="$2"
-ASR_MODEL="${MEETING_MODEL:-Qwen/Qwen3-ASR-1.7B}"   # MEETING_MODEL=Qwen/Qwen3-ASR-0.6B 可换轻量
+# MLX 量化权重,不是 HF 全精度那份。实测同一段 265s 音频(不分人):
+#   Qwen/Qwen3-ASR-1.7B(全精度 4.4G)  48s = 5.5x 实时
+#   mlx-community/…-8bit (2.3G)        8s = 33.1x 实时   ← 快 6 倍
+# 转写文本相似度 98.91%,质量没有代价。MEETING_MODEL=… 可覆盖。
+ASR_MODEL="${MEETING_MODEL:-mlx-community/Qwen3-ASR-1.7B-8bit}"
 
 # 抽出 --me <说话人>（传给 minutes，让待办区分我的/他人）
 ME=""
