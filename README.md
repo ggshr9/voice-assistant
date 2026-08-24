@@ -80,7 +80,11 @@ Python 脚本用 [PEP 723 内联依赖](https://peps.python.org/pep-0723/)，`uv
 ## 测试
 
 ```bash
-uv run tests/test_caption_core.py      # 纯逻辑
-uv run tests/test_stt_lang.py          # 需 stt_server 在跑
+uv run tests/test_minutes.py           # 纪要分块/去噪/文件定位/待办归属（不联网）
+uv run tests/test_caption_core.py      # 字幕纯逻辑
 uv run tests/test_caption_pipeline.py  # stub 网络，验编排
+uv run tests/test_stt_lang.py          # 需 stt_server 在跑
 ```
+
+`test_minutes.py` 用变异测试验过牙齿：改坏 `_denoise` 的叠词阈值、拆掉
+`split_chunks` 的行边界保护、把「我是谁」指令误塞进逐块笔记，三种注入都会失败。
