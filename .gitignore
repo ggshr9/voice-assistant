@@ -23,3 +23,8 @@ __pycache__/
 # 本地配置(含内网地址与 key)
 *.env
 config.local.sh
+
+# 线上 web/ 的凭据与证书(从服务器同步时必须排除)
+secrets.env
+hf.env
+cf.ini

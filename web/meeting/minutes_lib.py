@@ -3,14 +3,12 @@ LLM 走 litellm 网关(env: CAPTION_LLM_URL / CAPTION_LLM_KEY / CAPTION_LLM_MODE
 import os, re, json, time, string, urllib.request
 from collections import Counter
 
-LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置,不设内网默认值
+LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
 LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 
 
 def ask(system, user, max_tokens=2600, temperature=0.3):
-    if not LLM_URL:
-        raise RuntimeError("CAPTION_LLM_URL 未配置 —— 设成你的 LLM 网关地址后重试(见 README「配置」)。")
     body = json.dumps({
         "model": LLM_MODEL, "max_tokens": max_tokens, "temperature": temperature,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],

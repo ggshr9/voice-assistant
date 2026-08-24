@@ -27,17 +27,28 @@ _LANG = {"zh": "Chinese", "en": "English", "auto": "auto"}
 
 def run(audio, outdir, me=None, lang="zh", log=print):
     os.makedirs(outdir, exist_ok=True)
+    # 线上会议(双声道 L=对方/R=我)走声道分人;其余下混走 pyannote
+    scene = ""
+    try:
+        scene = json.load(open(os.path.join(outdir, "meta.json"), encoding="utf-8")).get("scene", "")
+    except Exception:
+        pass
+    roles = "1" if scene == "线上" else "0"
     wav = os.path.join(outdir, "audio.wav")
     log("准备：转 16k wav")
-    subprocess.run(["ffmpeg", "-y", "-i", audio, "-ac", "1", "-ar", "16000", wav],
-                   check=True, capture_output=True)
+    ff = ["ffmpeg", "-y", "-i", audio, "-ar", "16000", wav]
+    if roles != "1":                       # 非线上:下混单声道
+        ff[5:5] = ["-ac", "1"]
+    subprocess.run(ff, check=True, capture_output=True)
+    if roles == "1" and not me:            # 线上:转写里"我"就是本人
+        me = "我"
 
     ann = os.path.join(outdir, "annotated.txt")
-    log(f"分人 + 转写中（pyannote + Qwen3-ASR / 4090，语言={lang}）")
-    subprocess.run([PY_DIA, os.path.join(HERE, "asr_diarize_step.py"), wav, ann, _LANG.get(lang, "Chinese")],
+    log(f"分人 + 转写中（{'声道分轨 ' if roles == '1' else ''}pyannote + Qwen3-ASR / 4090，语言={lang}）")
+    subprocess.run([PY_DIA, os.path.join(HERE, "asr_diarize_step.py"), wav, ann, _LANG.get(lang, "Chinese"), roles],
                    check=True, env=os.environ)
     text = open(ann, encoding="utf-8").read().strip()
-    nspk = len(set(re.findall(r"^说话人[A-Z]", text, re.M)))
+    nspk = len(set(re.findall(r"^(?:说话人[A-Z]|我|对方)", text, re.M)))
     log(f"转写完成：{nspk} 人")
 
     log("生成会议纪要（网关 Qwen3.6）")

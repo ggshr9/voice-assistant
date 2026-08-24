@@ -46,11 +46,20 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 ### 网页版（`web/`）
 - `web_caption.py` — aiohttp + WSS：浏览器推 16k PCM → VAD 切句 → faster-whisper(CUDA) → 网关翻译 → 推回 `{orig, zh}`
+- `config.py` / `jobs.py` / `sessions.py` / `stt.py` — 共享配置、任务队列、会话与录音留存、STT 封装
+- `run_web.sh` — 启动脚本（systemd unit 在服务器 `~/voice-svc/systemd/`）
 - `web/meeting/` — 会议批处理流水线：`transcribe_step` / `diarize_step` / `asr_diarize_step` / `minutes_lib` / `meeting_pipeline`
 
 > 网页版跑在公司内网那台 GPU 机器上（`ssh gpu-server` → `gpu-box`，2× RTX 4090），代码在那边的 `~/voice-svc/`：faster-whisper + pyannote + CUDA，纪要走 litellm 网关。与本机 MLX 那套是两条独立实现。
 >
-> ⚠️ **仓库里这份是 2026-06-20 的快照，已落后于线上**（服务器上 6-22 又加了 `jobs.py` / `sessions.py` / `config.py`，`web_caption.py` 从 8KB 长到 20KB、`index.html` 8KB→48KB）。要以哪边为准需要先决定；同步时注意服务器上有 `secrets.env` 和 TLS 证书，不能入库。
+> **那台机器是 `web/` 的真源，仓库这份是镜像**（与 `bin/` 相反 —— 那边是仓库为真源）。用 `sync-web` 拉回，别手动 rsync：
+>
+> ```bash
+> sync-web --check   # 只看差异
+> sync-web           # 拉回
+> ```
+>
+> 脚本把安全边界固化了：排除 `secrets.env`（含 `CAPTION_LLM_KEY` / `CAPTION_ACCESS_PW`）和 TLS 私钥，并**自动把服务器版写死的内网网关默认值洗成空**——线上靠 `secrets.env` 注入，仓库必须保持「默认空 + 缺失即报错」，否则每拉一次就把内网拓扑带回来一次。最后会复查一遍，有残留就退出非零。
 
 ## 常驻服务（LaunchAgent）
 

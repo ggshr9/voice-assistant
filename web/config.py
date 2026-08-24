@@ -1,0 +1,19 @@
+"""会议工作台共享配置(环境变量 + 常量)。"""
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SESSIONS = os.path.expanduser("~/voice-svc/sessions")
+os.makedirs(SESSIONS, exist_ok=True)
+
+MODEL = os.environ.get("STT_MODEL", "large-v3-turbo")
+LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
+LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
+LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
+
+SR, FRAME = 16000, 480           # 16k 采样, 30ms 帧
+SILENCE_TAIL, MIN_SPEECH = 0.8, 0.4
+ACCESS_PW = os.environ.get("CAPTION_ACCESS_PW", "")   # 设了就要口令
+
+# 录音存储:停止后把 wav 转 Opus(~10x 小);保留策略与磁盘告警
+RETENTION_DAYS = int(os.environ.get("CAPTION_RETENTION_DAYS", "0"))      # >0 启用:删超期录音文件(保留文字/纪要)
+SESSIONS_WARN_GB = float(os.environ.get("CAPTION_SESSIONS_WARN_GB", "50"))
