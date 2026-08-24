@@ -26,7 +26,8 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 ### CLI（`bin/`）
 - `rec` — 录音。`rec` 录麦克风，`rec online` 录聚合设备（线上会议：对方+自己）
-- `meeting <文件> [说话人数|-] [nominutes] [--me 说话人N]` — 转写（mlx-qwen3-asr / Qwen3-ASR-1.7B）+ pyannote 声纹分人 + 自动调 `minutes`
+- `meeting <文件> [说话人数|-] [nominutes] [--me 说话人N]` — 转写（mlx-qwen3-asr / Qwen3-ASR-1.7B-8bit）+ pyannote 声纹分人（走 GPU）+ 自动调 `minutes`
+  - 内部两个小模块：`bin/_asr_mps.py`（把分人搬到 MPS，快 26.7 倍）、`bin/_annotate.py`（词级 segment → 说话人标注稿）
 - `minutes <转写目录|.txt|.json>` — 结构化纪要 Markdown：一句话摘要 / 关键决议 / 待办表格（分「我的-他人」）/ 讨论要点 / 风险。长会议自动 map-reduce 分块
 - `llm {start|stop|status|log|watch|test|vision}` — 统一大脑服务，一个端口同时给 OpenAI 格式（`:8080/v1`）和 Anthropic 格式（`:8080/v1/messages`）
 - `caption` — 实时字幕（外语→中文），底部双语浮窗
@@ -81,6 +82,8 @@ Python 脚本用 [PEP 723 内联依赖](https://peps.python.org/pep-0723/)，`uv
 
 ```bash
 uv run tests/test_minutes.py           # 纪要分块/去噪/文件定位/待办归属（不联网）
+uv run tests/test_annotate.py          # 词级 segment → 说话人标注稿的拼接规则
+uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 uv run tests/test_caption_core.py      # 字幕纯逻辑
 uv run tests/test_caption_pipeline.py  # stub 网络，验编排
 uv run tests/test_stt_lang.py          # 需 stt_server 在跑

@@ -104,38 +104,7 @@ ls "$OUT" 2>/dev/null
 if [ "$DIARIZE" = 1 ]; then
   JSON="$(ls "$OUT"/*.json 2>/dev/null | head -1)"
   if [ -n "$JSON" ]; then
-    OUT="$OUT" JSON="$JSON" python3 - <<'PY'
-import json, os
-out = os.environ["OUT"]; jf = os.environ["JSON"]
-d = json.load(open(jf, encoding="utf-8"))
-segs = d.get("segments") or []
-if any(s.get("speaker") for s in segs):
-    # 逐字 segment 按连续相同 speaker 合并成「轮次」
-    turns, cur, sp = [], "", None
-    for s in segs:
-        spk = s.get("speaker") or "SPEAKER_?"
-        if spk != sp and cur:
-            turns.append((sp, cur)); cur = ""
-        sp = spk; cur += s.get("text", "")
-    if cur: turns.append((sp, cur))
-    # SPEAKER_00 → 说话人A …（稳定映射；字母匿名牌，会后认出谁是谁再替换）
-    import string
-    order, name = {}, {}
-    for spk, _ in turns:
-        if spk not in order:
-            i = len(order)
-            order[spk] = i + 1
-            name[spk] = f"说话人{string.ascii_uppercase[i]}" if i < 26 else f"说话人{i + 1}"
-    if len(order) >= 2:
-        # 多人才写标注版（segment 文本无标点，单人时不如带标点的纯 txt）
-        lines = [f"{name[spk]}：{txt}" for spk, txt in turns]
-        base = os.path.splitext(os.path.basename(jf))[0]
-        ann = os.path.join(out, base + "_annotated.txt")
-        open(ann, "w", encoding="utf-8").write("\n".join(lines) + "\n")
-        print(f"🗣  已按说话人合成: {os.path.basename(ann)}（{len(order)} 人）")
-    else:
-        print(f"🗣  仅检出 1 个说话人，纪要用带标点原文")
-PY
+    python3 "$REPO_DIR/bin/_annotate.py" "$JSON" "$OUT"
   fi
 fi
 
