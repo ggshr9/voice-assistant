@@ -8,6 +8,7 @@ minutes — 把会议转写文本变成结构化纪要（全本地，喂 vllm-ml
   minutes <转写目录> --me 说话人1   # 告诉它哪个说话人是「我」→ 待办「我的/他人」才准
   minutes <转写目录> --say          # 生成后用本地 TTS 念一句话摘要
   minutes <转写目录> --open         # 生成后用默认程序打开
+  minutes <转写目录> --noindex      # 不登记进 ~/会议录音/索引.json
 
 输出: 在转写文件同目录写 纪要_<名字>.md，并打印路径。
 
@@ -16,6 +17,7 @@ minutes — 把会议转写文本变成结构化纪要（全本地，喂 vllm-ml
   - 大脑没起会自动 `llm start` 并等待加载
   - 长会议自动分块（map-reduce）：先逐块记笔记，再汇总成纪要
   - 待办自动区分「我的」和「他人」
+  - 生成后自动登记进会议索引，之后可 `recall "问题"` 用自然语言检索
 """
 import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
 
@@ -227,6 +229,32 @@ def make_record(text):
     return "\n".join(parts)
 
 # ---------- TTS（可选）----------
+def register_index(out_dir, title=None):
+    """纪要写完后登记进 ~/会议录音/索引.json —— 让 recall 能找到这场会。
+
+    登记失败绝不影响纪要本身:索引是附加能力,不是主流程。
+    """
+    try:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "_index.py")
+        spec = importlib.util.spec_from_loader("_index", SourceFileLoader("_index", path))
+        idx = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(idx)
+        entry = idx.scan_dir(out_dir)
+        if entry is None:
+            return
+        if entry.get("summary"):
+            entry["title"] = idx.llm_title(
+                entry["summary"],
+                ask=lambda sysmsg, user: ask(sysmsg, user, max_tokens=40),
+                fallback=entry["id"])
+        idx.save(idx.upsert(idx.load(), entry))
+        log(f"🗂  已登记进索引：{entry['title']}（recall \"…\" 可检索）")
+    except Exception as e:
+        log(f"（索引登记跳过：{type(e).__name__}: {e}）")
+
+
 def say_summary(md):
     m = re.search(r"##\s*一句话摘要\s*\n+(.+)", md)
     summary = (m.group(1).strip() if m else md[:80]).lstrip("（(").rstrip("）)")
@@ -301,6 +329,10 @@ def main():
             f.write(rec_header + record + "\n")
         log("✅ 会议记录已生成:")
         print(rec_out)
+
+    # 登记进索引，让 recall 能检索到这场会（放在会议记录之后，字段才齐）
+    if "--noindex" not in flags:
+        register_index(base_dir)
 
     if "--say" in flags:
         say_summary(md)

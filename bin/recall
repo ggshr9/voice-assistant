@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""recall —— 用自然语言问过去的会议。
+
+两段式检索(抄 ownscribe 那个被验证过的形状,不需要向量库):
+  第一段「选会」:把所有会的标题+摘要(很短)喂给本地大脑 → 哪几场相关
+  第二段「作答」:只把选中那几场的全文喂进去 → 回答并标出处
+
+为什么不上向量库:会议数量是几十到几百量级,全部摘要加起来才几 KB,
+本来就塞得进上下文;而全文检索真正需要的是"读懂",不是"找相似"。
+多一个嵌入模型 + 索引库,换不来准确率,只增加两个会坏的东西。
+
+用法:
+  recall "上次跟某地区那边聊联调，结论是什么？"
+  recall --list                 # 列出索引里的会
+  recall -n 3 "..."             # 最多取 3 场会作答(默认 2)
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+MAX_CONTEXT_CHARS = 24000        # 每场会喂进去的上限,超了截断并说明
+
+PICK_SYS = (
+    "你在一堆会议里挑出与用户问题相关的那几场。下面每行是一场会：编号、日期、标题、摘要。"
+    "只输出相关会议的编号，用逗号分隔，例如：1,3。"
+    "如果都不相关就输出 none。不要解释，不要输出别的字。"
+)
+
+# 兜底指令要写得"只在真的找不到时才生效",否则会渗进正常回答:
+# 第一版写成「如果没有答案就说没找到」,结果模型在答得很好的情况下
+# 仍然以「没找到。」开头,再洋洋洒洒答完 —— 自相矛盾。
+ANSWER_SYS = (
+    "你在根据会议记录回答问题。只依据给出的会议内容作答，不要编造，"
+    "并标明出处（会议标题或日期，必要时引原话）。\n"
+    "直接给出答案。不要用「没找到」「根据会议记录」之类的话开头。\n"
+    "只有当会议内容里确实没有相关信息时，才说明找不到，"
+    "并简述这几场会实际谈了什么——这一句仅限该情形，答得出来时不要写。"
+)
+
+
+def format_catalog(entries):
+    """把索引压成第一段检索用的目录文本(每场会一行)。"""
+    lines = []
+    for i, e in enumerate(entries, 1):
+        lines.append(
+            f"{i}. [{e.get('date') or '日期不明'}] {e.get('title') or e.get('id')}"
+            f" —— {e.get('summary') or '(无摘要)'}"
+        )
+    return "\n".join(lines)
+
+
+def parse_picks(raw, count):
+    """从大脑的回答里抠出编号,转成 0 起的下标。
+
+    容忍各种啰嗦写法(`1,3` / `会议 1 和 3` / `1、3`);`none` 或抠不出 → 空列表。
+    """
+    text = (raw or "").strip().lower()
+    if not text or "none" in text:
+        return []
+    import re
+    picks = []
+    for tok in re.findall(r"\d+", text):
+        n = int(tok)
+        if 1 <= n <= count and (n - 1) not in picks:
+            picks.append(n - 1)
+    return picks
+
+
+def keyword_fallback(question, entries, limit=2):
+    """大脑没挑出东西时的兜底:按标题+摘要里的字符重合度排个序。
+
+    中文没有空格分词,这里按 2-gram 重合算,够用即止 —— 它只是兜底,不是主路径。
+    """
+    q = "".join(ch for ch in (question or "") if ch.strip())
+    grams = {q[i:i + 2] for i in range(len(q) - 1)} or {q}
+    scored = []
+    for i, e in enumerate(entries):
+        hay = f"{e.get('title', '')}{e.get('summary', '')}"
+        hits = sum(1 for g in grams if g in hay)
+        if hits:
+            scored.append((hits, i))
+    scored.sort(reverse=True)
+    return [i for _, i in scored[:limit]]
+
+
+def load_meeting_text(entry, max_chars=MAX_CONTEXT_CHARS):
+    """读一场会喂给第二段的正文:优先带说话人标注的转写,其次纯文本,再不济用纪要。
+
+    Returns:
+        (正文, 是否被截断)
+    """
+    d = entry.get("dir", "")
+    files = entry.get("files") or {}
+    for key in ("transcript", "minutes", "record"):
+        name = files.get(key)
+        if not name:
+            continue
+        path = os.path.join(d, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        if len(text) > max_chars:
+            return text[:max_chars], True
+        return text, False
+    return "", False
+
+
+def build_context(entries, picks, max_chars=MAX_CONTEXT_CHARS):
+    """把选中的会拼成第二段的输入。"""
+    blocks, notes = [], []
+    for i in picks:
+        e = entries[i]
+        text, cut = load_meeting_text(e, max_chars)
+        if not text:
+            continue
+        head = f"### 会议：{e.get('title') or e.get('id')}（{e.get('date') or '日期不明'}）"
+        blocks.append(f"{head}\n{text}")
+        if cut:
+            notes.append(f"{e.get('title') or e.get('id')}（只取了前 {max_chars} 字）")
+    return "\n\n".join(blocks), notes
+
+
+def main(argv):
+    import _index
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip()); return 0
+
+    entries = _index.load()
+    if not entries:
+        print("索引是空的。先跑一次：_index.py rebuild", file=sys.stderr)
+        return 1
+
+    if argv[0] == "--list":
+        print(_index.render_markdown(entries)); return 0
+
+    top = 2
+    if argv[0] == "-n":
+        top = int(argv[1]); argv = argv[2:]
+    question = " ".join(argv).strip()
+    if not question:
+        print('用法: recall "你的问题"', file=sys.stderr); return 1
+
+    # 借 minutes 的 ask()，不另起 LLM 客户端
+    ask = _index._brain_ask()
+    if ask is None:
+        print("⚠️ 本地大脑没起来。先跑: llm start", file=sys.stderr)
+        return 1
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    spec = importlib.util.spec_from_loader(
+        "_minutes", SourceFileLoader("_minutes", os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "minutes")))
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+
+    print(f"🔎 在 {len(entries)} 场会里找相关的 …", file=sys.stderr)
+    raw = mod.ask(PICK_SYS, f"问题：{question}\n\n会议列表：\n{format_catalog(entries)}",
+                  max_tokens=60, temperature=0.1)
+    picks = parse_picks(raw, len(entries))[:top]
+    if not picks:
+        picks = keyword_fallback(question, entries, limit=top)
+        if picks:
+            print("   （大脑没挑出来，改用关键词兜底）", file=sys.stderr)
+    if not picks:
+        print("没找到相关的会议。", file=sys.stderr)
+        return 2
+
+    for i in picks:
+        e = entries[i]
+        print(f"   → {e.get('date')} {e.get('title')}", file=sys.stderr)
+
+    context, notes = build_context(entries, picks)
+    if not context:
+        print("选中的会议没有可读的转写文本。", file=sys.stderr)
+        return 2
+
+    print("💬 作答中 …", file=sys.stderr)
+    answer = mod.ask(ANSWER_SYS, f"问题：{question}\n\n会议内容：\n\n{context}",
+                     max_tokens=1200, temperature=0.3)
+    print()
+    print(answer)
+    if notes:
+        print("\n---\n> 注：" + "；".join(notes), file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

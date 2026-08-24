@@ -35,7 +35,21 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 - `dictate` — 全局语音听写，热键切换式，转写后粘贴到光标处
 - `chat` / `ask` — 连续对话，语音版 / 打字版双胞胎
 - `va` — 全本地语音助手「小麦」
+- `recall "问题"` — **用自然语言问过去的会议**。两段式检索：先用标题+摘要选出相关的会，再把那几场全文喂给大脑作答并标出处。`recall --list` 列出全部
 - `clone <参考音> <原文> <新内容>` — 声音克隆（IndexTTS-1.5）
+
+### 会议索引
+
+`minutes` 生成纪要后自动登记，也可 `_index.py rebuild` 重建：
+
+```
+~/会议录音/索引.json   机器读（recall 与将来的 MCP 直接吃这个）
+~/会议录音/索引.md     人读（Finder 里点开就能扫）
+```
+
+每场会一行：标题（本地大脑起的）、日期、时长、说话人数、待办数（我的）、一句话摘要、路径。json 是真源，md 由它渲染。
+
+**为什么不上向量库**：会议是几十到几百场量级，全部摘要加起来才几 KB，本来就塞得进上下文；而检索真正需要的是「读懂」不是「找相似」。多一个嵌入模型 + 索引库，换不来准确率，只增加两个会坏的东西。
 
 ### 本机服务（Python）
 - `stt_server.py` — 常驻 STT（mlx-whisper large-v3-turbo），`:8082/transcribe`
@@ -95,6 +109,8 @@ Python 脚本用 [PEP 723 内联依赖](https://peps.python.org/pep-0723/)，`uv
 ```bash
 uv run tests/test_minutes.py           # 纪要分块/去噪/文件定位/待办归属（不联网）
 uv run tests/test_annotate.py          # 词级 segment → 说话人标注稿的拼接规则
+uv run tests/test_index.py             # 会议索引：解析纪要/起标题/去重/渲染
+uv run tests/test_recall.py            # 检索：目录渲染/抠编号/关键词兜底/拼上下文
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）
 uv run tests/test_caption_core.py      # 字幕纯逻辑
