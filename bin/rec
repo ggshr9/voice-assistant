@@ -4,9 +4,17 @@
 #   rec              录麦克风（线下会议 / 自己说话）
 #   rec online       录"会议录制"聚合设备（线上会议：对方+自己声音）
 #   rec online 转写   录完自动调 meeting 转写
-# 录制中按 Ctrl+C 停止保存。
+# 录制中按 Ctrl+C 停止保存；持续静音超过阈值也会自动停(默认 5 分钟)。
+#
+# 为什么要自动停:会议结束后忘了停录,尾部静音会被 ASR 幻觉成一长串「嗯」——
+# 实测某次 1h48m 的会,结尾被填了 330 个「。嗯」,占转写全文 8.5%,还白烧转写时间。
+# 用 ffmpeg 自带的 silencedetect(而不是另起一路 VAD,那样要抢同一个音频设备)。
+#   REC_SILENCE_SEC=0    关闭自动停
+#   REC_SILENCE_SEC=120  改成 2 分钟
+#   REC_SILENCE_DB=-40   改灵敏度(越负越严格,默认 -35dB)
 
 export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+FFMPEG="${FFMPEG:-ffmpeg}"   # 可注入，便于测试用桩顶替（PATH 顶不掉上面这行）
 
 MODE="$1"
 AUTO="$2"
@@ -23,17 +31,44 @@ else
 fi
 
 # 检查设备是否存在
-if ! ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -q "\] $DEV"; then
+if ! "$FFMPEG" -f avfoundation -list_devices true -i "" 2>&1 | grep -q "\] $DEV"; then
   echo "⚠️ 找不到音频设备：「$DEV」"
   echo "当前可用设备："
-  ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed -n '/audio devices/,/^$/p' | grep -oE '\[[0-9]+\].*'
+  "$FFMPEG" -f avfoundation -list_devices true -i "" 2>&1 | sed -n '/audio devices/,/^$/p' | grep -oE '\[[0-9]+\].*'
   [ "$MODE" = "online" ] && echo "→ 线上录制需先在「音频 MIDI 设置」建好名为「会议录制」的聚合设备（见安装说明）。"
   exit 1
 fi
 
+SILENCE_SEC="${REC_SILENCE_SEC:-300}"
+SILENCE_DB="${REC_SILENCE_DB:--35}"
+
 echo "🔴 开始录制（设备：$DEV）→ $OUT"
-echo "   说话/开会，结束按 Ctrl+C 停止..."
-ffmpeg -f avfoundation -i ":$DEV" -ac 1 -ar 16000 -c:a aac "$OUT" 2>/dev/null
+if [ "$SILENCE_SEC" = "0" ]; then
+  echo "   说话/开会，结束按 Ctrl+C 停止...（静音自动停：已关闭）"
+  "$FFMPEG" -f avfoundation -i ":$DEV" -ac 1 -ar 16000 -c:a aac "$OUT" 2>/dev/null
+else
+  echo "   说话/开会，结束按 Ctrl+C 停止...（持续静音 ${SILENCE_SEC}s 也会自动停）"
+  LOG="$(mktemp -t rec-silence)"
+  # silencedetect 只做检测、原样透传音频；d= 即「连续静音多久才算一次」
+  "$FFMPEG" -f avfoundation -i ":$DEV" -ac 1 -ar 16000 \
+         -af "silencedetect=noise=${SILENCE_DB}dB:d=${SILENCE_SEC}" \
+         -c:a aac "$OUT" > /dev/null 2> "$LOG" &
+  FFPID=$!
+  # Ctrl+C 要转发给 ffmpeg，让它正常收尾写完 moov（否则 m4a 损坏）
+  trap 'kill -INT "$FFPID" 2>/dev/null' INT TERM
+  while kill -0 "$FFPID" 2>/dev/null; do
+    if grep -q "silence_start" "$LOG" 2>/dev/null; then
+      echo ""
+      echo "🤫 检测到持续静音 ${SILENCE_SEC}s，自动停止录制。"
+      kill -INT "$FFPID" 2>/dev/null
+      break
+    fi
+    sleep 2
+  done
+  wait "$FFPID" 2>/dev/null
+  trap - INT TERM
+  rm -f "$LOG"
+fi
 
 echo ""
 echo "✅ 录音已保存：$OUT"

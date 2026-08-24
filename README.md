@@ -26,6 +26,7 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 ### CLI（`bin/`）
 - `rec` — 录音。`rec` 录麦克风，`rec online` 录聚合设备（线上会议：对方+自己）
+  - 持续静音 5 分钟自动停（`REC_SILENCE_SEC=0` 关闭、`REC_SILENCE_DB` 调灵敏度）。会后忘了停录会让 ASR 把静音幻觉成一长串「嗯」
 - `meeting <文件> [说话人数|-] [nominutes] [--me 说话人N]` — 转写（mlx-qwen3-asr / Qwen3-ASR-1.7B-8bit）+ pyannote 声纹分人（走 GPU）+ 自动调 `minutes`
   - 内部两个小模块：`bin/_asr_mps.py`（把分人搬到 MPS，快 26.7 倍）、`bin/_annotate.py`（词级 segment → 说话人标注稿）
 - `minutes <转写目录|.txt|.json>` — 结构化纪要 Markdown：一句话摘要 / 关键决议 / 待办表格（分「我的-他人」）/ 讨论要点 / 风险。长会议自动 map-reduce 分块
@@ -47,7 +48,9 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 - `web_caption.py` — aiohttp + WSS：浏览器推 16k PCM → VAD 切句 → faster-whisper(CUDA) → 网关翻译 → 推回 `{orig, zh}`
 - `web/meeting/` — 会议批处理流水线：`transcribe_step` / `diarize_step` / `asr_diarize_step` / `minutes_lib` / `meeting_pipeline`
 
-> ⚠️ 网页版是**面向 GPU 服务器**写的：走 `~/voice-svc` 下的 venv、faster-whisper + pyannote + CUDA，纪要走 litellm 网关。与本机 MLX 那套是两条独立实现，本机目前没有 `~/voice-svc`，跑不起来。
+> 网页版跑在公司内网那台 GPU 机器上（`ssh gpu-server` → `gpu-box`，2× RTX 4090），代码在那边的 `~/voice-svc/`：faster-whisper + pyannote + CUDA，纪要走 litellm 网关。与本机 MLX 那套是两条独立实现。
+>
+> ⚠️ **仓库里这份是 2026-06-20 的快照，已落后于线上**（服务器上 6-22 又加了 `jobs.py` / `sessions.py` / `config.py`，`web_caption.py` 从 8KB 长到 20KB、`index.html` 8KB→48KB）。要以哪边为准需要先决定；同步时注意服务器上有 `secrets.env` 和 TLS 证书，不能入库。
 
 ## 常驻服务（LaunchAgent）
 
@@ -84,6 +87,7 @@ Python 脚本用 [PEP 723 内联依赖](https://peps.python.org/pep-0723/)，`uv
 uv run tests/test_minutes.py           # 纪要分块/去噪/文件定位/待办归属（不联网）
 uv run tests/test_annotate.py          # 词级 segment → 说话人标注稿的拼接规则
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
+bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）
 uv run tests/test_caption_core.py      # 字幕纯逻辑
 uv run tests/test_caption_pipeline.py  # stub 网络，验编排
 uv run tests/test_stt_lang.py          # 需 stt_server 在跑
