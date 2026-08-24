@@ -47,6 +47,19 @@ rm -f "$OUT"/*_annotated.txt 2>/dev/null || true
 
 ARGS=(--model "$ASR_MODEL" --language Chinese --output-dir "$OUT" --output-format all)
 
+# 声纹分人走 GPU:上游 mlx-qwen3-asr 从不把 pyannote pipeline .to(device),一直跑 CPU。
+# 实测 265s 音频分人 CPU 117.5s → MPS 4.4s(快 26.7 倍),逐帧归属一致率 100%。
+# 用仓库里的 shim 包一层上游的私有加载函数,上游代码一行不改。见 bin/_asr_mps.py
+REPO_DIR="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+SHIM="$REPO_DIR/bin/_asr_mps.py"
+ASR_PY="$(head -1 "$(command -v mlx-qwen3-asr)" 2>/dev/null | sed 's|^#!||')"
+if [ -f "$SHIM" ] && [ -x "$ASR_PY" ]; then
+  ASR=("$ASR_PY" "$SHIM")
+else
+  echo "  ℹ️  找不到 GPU 分人 shim，用上游默认(分人会慢很多)"
+  ASR=(mlx-qwen3-asr)
+fi
+
 # 是否具备声纹分人条件：用户没明确关闭 + 有 HF_TOKEN + community-1 已缓存
 have_diar() { ls "$HOME"/.cache/huggingface/hub/*speaker-diarization-community*/snapshots/*/config.yaml >/dev/null 2>&1; }
 
@@ -71,11 +84,11 @@ fi
 
 echo "  文件: $FILE"
 # 跑转写；若开了分人却失败，自动降级纯转写离线重试
-if ! mlx-qwen3-asr "$FILE" "${ARGS[@]}"; then
+if ! "${ASR[@]}" "$FILE" "${ARGS[@]}"; then
   if [ "$DIARIZE" = 1 ]; then
     echo "⚠️ 声纹分人失败，降级为纯转写重试…"
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-      mlx-qwen3-asr "$FILE" --model "$ASR_MODEL" --language Chinese \
+      "${ASR[@]}" "$FILE" --model "$ASR_MODEL" --language Chinese \
         --output-dir "$OUT" --output-format all
   else
     echo "❌ 转写失败。"; exit 1
