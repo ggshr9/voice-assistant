@@ -82,6 +82,18 @@ class TestDenoise(unittest.TestCase):
     def test_纯空白行被丢掉(self):
         self.assertEqual(minutes._denoise("有内容\n   \n还有内容"), "有内容\n还有内容")
 
+    def test_折叠多字循环节(self):
+        """真实故障:会议结束后没停录,尾部静音被 ASR 幻觉成 330 个「。嗯」。
+        单字规则抓不到「。嗯」这种双字循环 —— 它在 .txt 里占了全文 8.5%。"""
+        self.assertEqual(minutes._denoise("。嗯" * 330), "。嗯")
+        self.assertEqual(minutes._denoise("说话人A：正经话" + "对吧" * 50),
+                         "说话人A：正经话对吧")
+
+    def test_循环节含数字或字母时不动(self):
+        """护栏:别把 06-06-06、abcabcabc 这类正常内容当噪音吃掉。"""
+        for s in ("06-06-06-06", "abcabcabcabc", "v1.2v1.2v1.2"):
+            self.assertEqual(minutes._denoise(s), s)
+
 
 class TestFindTranscript(unittest.TestCase):
     def setUp(self):
@@ -173,6 +185,15 @@ class TestMakeMinutesAttribution(unittest.TestCase):
         minutes.make_minutes("一段很短的会议转写")
         self.assertEqual(len(self.calls), 1)
 
+    def test_喂给LLM前先去噪(self):
+        """make_record 会去噪,make_minutes 之前没有 —— 幻觉噪音直接进了纪要 prompt,
+        实测占掉 5.5% 的上下文。"""
+        text = "说话人A：这个方案我们下周定\n说话人B：" + "嗯" * 330
+        minutes.make_minutes(text)
+        sent = self.calls[0][1]
+        self.assertIn("这个方案我们下周定", sent)
+        self.assertNotIn("嗯嗯嗯", sent, "幻觉噪音没被清掉就喂给了 LLM")
+
     def test_me_把该说话人指认为我(self):
         minutes.make_minutes("说话人1：我来跟进这件事", me="说话人1")
         system = self.calls[0][0]
@@ -185,8 +206,11 @@ class TestMakeMinutesAttribution(unittest.TestCase):
         self.assertEqual(self.calls[0][0], minutes.FINAL_SYS)
 
     def test_长会议走map_reduce(self):
-        text = "\n".join(f"说话人{i%2}：" + "内容" * 200 for i in range(60))
-        n_chunks = len(minutes.split_chunks(text))
+        # 填充料必须【不重复】—— make_minutes 会先去噪,"内容"*200 这种会被循环节折掉,
+        # 文本缩水后就不再触发分块,测试会假绿。
+        filler = "".join(chr(0x4E00 + (j * 7919) % 0x2000) for j in range(400))
+        text = "\n".join(f"说话人{i%2}：{filler}" for i in range(60))
+        n_chunks = len(minutes.split_chunks(minutes._denoise(text)))
         self.assertGreater(n_chunks, 1, "构造的样本没触发分块,测试本身失效")
 
         minutes.make_minutes(text, me="说话人0")

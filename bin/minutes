@@ -149,6 +149,7 @@ FINAL_SYS = ("你是资深会议纪要撰写者。基于提供的会议内容，
              "## 风险 / 待澄清\n- （遗留问题、分歧、需后续确认的点；没有就省略本节）\n")
 
 def make_minutes(text, me=None):
+    text = _denoise(text)        # 幻觉噪音先清掉再喂 LLM(实测能占掉 5.5% 的上下文)
     final_sys = FINAL_SYS
     if me:
         final_sys += (f"\n\n**重要**：转写中标记为「{me}」的说话人就是「我」本人。"
@@ -192,14 +193,24 @@ RECORD_SYS = (
     "说话人C：嗯，是。[?听不清，疑为'某地区']你吃不吃？不要那么……吃有点太多。[?这段含糊]")
 
 
+def _collapse_cycles(s):
+    """把 2-4 字的循环节重复≥3 次的串折成一个循环节:「。嗯。嗯。嗯…」→「。嗯」。
+    单字规则抓不到这种交替型幻觉——实测某次 1h48m 的会,尾部静音被 ASR 填成 330 个
+    「。嗯」,占了全文 8.5%。含数字/拉丁字母的循环节跳过,别把 06-06-06 当噪音吃掉。"""
+    def rep(m):
+        unit = m.group(1)
+        return m.group(0) if re.search(r"[0-9A-Za-z]", unit) else unit
+    return re.sub(r"(.{2,4}?)\1{2,}", rep, s)
+
+
 def _denoise(text):
-    """机械预清洗:同一个字重复≥3次的串折成一个、去掉清完后空白的行。先于 LLM 跑,保证噪音不靠模型自觉。"""
-    import re
+    """机械预清洗:重复的字/循环节折成一个、去掉清完后空白的行。先于 LLM 跑,保证噪音不靠模型自觉。"""
     out = []
     for ln in text.split("\n"):
         m = re.match(r"^(说话人[A-Z0-9]+：)(.*)$", ln)
         prefix, content = (m.group(1), m.group(2)) if m else ("", ln)
         content = re.sub(r"(.)\1{2,}", r"\1", content)      # 嘶嘶嘶嘶→嘶, 嗯嗯嗯→嗯
+        content = _collapse_cycles(content)                 # 。嗯。嗯。嗯…→。嗯
         if re.sub(r"[，。！？、\s,.!?]", "", content):
             out.append(prefix + content)
     return "\n".join(out)
