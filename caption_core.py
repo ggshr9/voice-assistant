@@ -104,6 +104,11 @@ def translate(text, src_lang, url=None):
         headers["Authorization"] = f"Bearer {LLM_KEY}"
     body = json.dumps({
         "model": LLM_MODEL, "max_tokens": 200, "temperature": 0.2,
+        # 必须显式关思考。开着的话本机大脑会把推理过程当译文吐出来 ——
+        # 而且是明文、没有 <think> 标签，下面那行 re.sub 剥不掉。
+        # 实测漏出来的是「Here's a thinking process: 1. **Analyze User Input:**…」，
+        # 糊在字幕浮窗上等于整条链路废掉。设计文档当初就写了这条，实现漏了。
+        "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "system", "content": _TRANS_SYS},
                      {"role": "user", "content": text}],
     }).encode()

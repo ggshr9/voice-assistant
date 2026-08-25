@@ -32,7 +32,8 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
   - 内部两个小模块：`bin/_asr_mps.py`（把分人搬到 MPS，快 26.7 倍）、`bin/_annotate.py`（词级 segment → 说话人标注稿）
 - `minutes <转写目录|.txt|.json>` — 结构化纪要 Markdown：一句话摘要 / 关键决议 / 待办表格（分「我的-他人」）/ 讨论要点 / 风险。长会议自动 map-reduce 分块
 - `llm {start|stop|status|log|watch|test|vision}` — 统一大脑服务，一个端口同时给 OpenAI 格式（`:8080/v1`）和 Anthropic 格式（`:8080/v1/messages`）
-- `caption` — 实时字幕（外语→中文），底部双语浮窗
+- `caption` — 实时字幕（外语→中文），底部双语浮窗。**默认全本地**：本机 mlx-whisper STT(8082) + 本机大脑(8080)，先起这两个服务再跑
+  - 远端方案（2026-08-24 实测）：STT `10.0.0.2:8090` 走 Tailscale 直连可用、**不需要 SSH 隧道**；公司 LLM 网关 4000 的 `/v1/chat/completions` 是 404、8088 在 404/429 之间跳，6 月后变过，没深挖
 - `dictate` — 全局语音听写，热键切换式，转写后粘贴到光标处
 - `chat` / `ask` — 连续对话，语音版 / 打字版双胞胎
 - `va` — 全本地语音助手「小麦」

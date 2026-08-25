@@ -41,9 +41,51 @@ def test_translate_passthrough_zh():
     assert cc.translate("你好", "zh") == "你好"
 
 
+def _capture_translate_body(fake_reply):
+    """截下发给大脑的请求体，并拿回 translate 的返回值。"""
+    import json as _json, io, urllib.request
+    captured = {}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = _json.loads(req.data.decode())
+        return _Resp(_json.dumps({"choices": [{"message": {"content": fake_reply}}]}).encode())
+
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        out = cc.translate("hello world", "en", url="http://127.0.0.1:9999/v1/chat/completions")
+    finally:
+        urllib.request.urlopen = orig
+    return captured["body"], out
+
+
+def test_translate_disables_thinking():
+    """必须显式关思考，否则本机大脑把推理过程当译文吐出来。
+
+    设计文档(2026-06-20)明确写了 chat_template_kwargs:{enable_thinking:false}，
+    实现里一直没加、只剥 <think> 标签 —— 而模型是直接吐明文推理、根本没有标签。
+    实测拿到的"译文"是「Here's a thinking process: 1. **Analyze User Input:**…」，
+    对字幕浮窗是致命的。
+    """
+    body, _ = _capture_translate_body("你好世界")
+    assert "chat_template_kwargs" in body, "请求体里没有 chat_template_kwargs"
+    assert body["chat_template_kwargs"].get("enable_thinking") is False
+
+
+def test_translate_still_strips_think_tags():
+    _, out = _capture_translate_body("<think>琢磨一下</think>你好世界")
+    assert out == "你好世界", out
+
+
 if __name__ == "__main__":
     test_segment_splits_on_silence()
     test_segment_drops_too_short()
     test_is_noise_filters_empty_and_hallu()
     test_translate_passthrough_zh()
+    test_translate_disables_thinking()
+    test_translate_still_strips_think_tags()
     print("OK")
