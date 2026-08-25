@@ -156,7 +156,7 @@ stdlib 手写 JSON-RPC 2.0 over stdio，不依赖 mcp SDK，零外部依赖（�
 |---|---|---|
 | `CAPTION_STT_URL` | ✅ | STT 服务地址（如本机 `http://127.0.0.1:8082/transcribe`） |
 | `CAPTION_STT_MODE` | | `upload` 传字节（远端服务）/ `path` 传路径（本机 mlx 服务），默认 `upload` |
-| `CAPTION_LLM_URL` | ✅ | LLM 网关的 `/v1/chat/completions` |
+| `CAPTION_LLM_URL` | ✅ | 任何 OpenAI 兼容端点的 `/v1/chat/completions`（OpenAI / DeepSeek / Ollama / vLLM 都行，不必自建网关）|
 | `CAPTION_LLM_KEY` / `CAPTION_LLM_MODEL` | | 网关鉴权与模型名，默认模型 `Qwen3.6` |
 | `CAPTION_ACCESS_PW` | | 网页版访问口令，设了才要 |
 | `HF_TOKEN` | | pyannote 声纹模型（门控） |

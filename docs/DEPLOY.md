@@ -164,16 +164,25 @@ uv pip install --python .venv-meeting/bin/python \
 
 `~/voice-svc/web/secrets.env`（**不进仓库**，权限 600）：
 
+**LLM 不需要自建网关** —— 任何 OpenAI 兼容端点填上 URL 和 key 就行：官方 OpenAI、
+DeepSeek、月之暗面，或本机的 Ollama / vLLM / LM Studio。
+
 ```bash
-export CAPTION_LLM_URL=https://你的网关/v1/chat/completions
-export CAPTION_LLM_KEY=...
-export CAPTION_LLM_MODEL=...
+export CAPTION_LLM_URL=https://api.deepseek.com/v1/chat/completions   # 举例
+export CAPTION_LLM_KEY=sk-...
+export CAPTION_LLM_MODEL=deepseek-chat
 export CAPTION_ACCESS_PW=...          # 网页访问口令，留空则不设防
 export CAPTION_RETENTION_DAYS=0       # >0 则删除超期录音（文字与纪要保留）
 export DIA_CLUSTER_THRESHOLD=0.72     # 声纹聚类阈值，越高越保守、越不容易把一个人拆成多人
 ```
 
 `~/voice-svc/hf.env`：`export HF_TOKEN=hf_xxx`（同样要先同意 pyannote 条款）
+
+> 本机的 `bin/minutes` 与 `caption_core.py` 会带两个 vLLM 扩展字段
+> （`repetition_penalty` / `chat_template_kwargs`，用于关思考和防 8bit 重复退化）。
+> 严格端点会对未知参数回 400 —— 代码会**自动脱掉这两个字段重试**，所以填云端 API
+> 也能直接用，不必改代码。只有 400/422 才降级；401/500 照常抛出，免得把配置错误
+> 伪装成成功。
 
 ### 证书
 

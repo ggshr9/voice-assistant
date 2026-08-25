@@ -1,5 +1,5 @@
 """实时字幕的纯逻辑:VAD 切句 / STT / 翻译 / 幻觉过滤。不碰 GUI、不直接开音频设备。"""
-import os, json, re, wave, urllib.request
+import os, json, re, wave, urllib.request, urllib.error
 from collections import Counter
 
 SAMPLE_RATE = 16000
@@ -102,7 +102,7 @@ def translate(text, src_lang, url=None):
     headers = {"Content-Type": "application/json"}
     if LLM_KEY:
         headers["Authorization"] = f"Bearer {LLM_KEY}"
-    body = json.dumps({
+    body = {
         "model": LLM_MODEL, "max_tokens": 200, "temperature": 0.2,
         # 必须显式关思考。开着的话本机大脑会把推理过程当译文吐出来 ——
         # 而且是明文、没有 <think> 标签，下面那行 re.sub 剥不掉。
@@ -111,10 +111,21 @@ def translate(text, src_lang, url=None):
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "system", "content": _TRANS_SYS},
                      {"role": "user", "content": text}],
-    }).encode()
-    req = urllib.request.Request(url, data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        out = json.load(r)
+    }
+    def _post(payload):
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+
+    try:
+        out = _post(body)
+    except urllib.error.HTTPError as e:
+        # 严格端点(OpenAI/DeepSeek 等)不认 vLLM 扩展字段 —— 脱掉重试。
+        # LLM_URL 是让用户随便填的，不能假设对端是 vLLM。bin/minutes 里有同样的处理。
+        if e.code not in (400, 422):
+            raise
+        out = _post({k: v for k, v in body.items() if k != "chat_template_kwargs"})
     zh = (out["choices"][0]["message"].get("content") or "").strip()
     zh = re.sub(r"<think>.*?</think>", "", zh, flags=re.S).strip()
     return zh

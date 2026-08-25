@@ -225,6 +225,67 @@ class TestMakeMinutesAttribution(unittest.TestCase):
         self.assertIn("负责人一律写 **我**", final_call[0])
         self.assertIn("【片段1】", final_call[1], "汇总的输入应该是各块笔记")
 
+class TestVendorFieldFallback(unittest.TestCase):
+    """请求体里有 vLLM 扩展字段（repetition_penalty / chat_template_kwargs）。
+
+    本机大脑需要它们（关思考、防 8bit 重复退化），但 OpenAI / DeepSeek 这类严格端点
+    会对未知参数回 400。既然 CAPTION_LLM_URL 是让用户随便填的，就不能假设对端是 vLLM——
+    被拒了要能自动脱掉扩展字段重试，否则「填个 URL 和 key」根本跑不起来。
+    """
+
+    def _fake_http(self, reject_vendor):
+        """返回 (urlopen 替身, 记录每次请求体的列表)。"""
+        import io
+        import json as _json
+        import urllib.error
+        import urllib.request
+        seen = []
+
+        class _Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            body = _json.loads(req.data.decode())
+            seen.append(body)
+            vendor = {"repetition_penalty", "chat_template_kwargs"} & set(body)
+            if reject_vendor and vendor:
+                raise urllib.error.HTTPError(
+                    "u", 400, "Unrecognized request argument", {}, None)
+            return _Resp(_json.dumps(
+                {"choices": [{"message": {"content": "纪要正文"}}]}).encode())
+
+        return fake_urlopen, seen
+
+    def _call(self, reject_vendor):
+        import urllib.request
+        fake, seen = self._fake_http(reject_vendor)
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake
+        try:
+            out = minutes.ask("sys", "user")
+        finally:
+            urllib.request.urlopen = orig
+        return out, seen
+
+    def test_对端接受扩展字段时照常带着(self):
+        out, seen = self._call(reject_vendor=False)
+        self.assertEqual(out, "纪要正文")
+        self.assertEqual(len(seen), 1, "不该多余重试")
+        self.assertIn("chat_template_kwargs", seen[0])
+
+    def test_对端拒收时脱掉扩展字段重试(self):
+        out, seen = self._call(reject_vendor=True)
+        self.assertEqual(out, "纪要正文", "降级后应该拿到结果")
+        self.assertGreaterEqual(len(seen), 2, "应该重试过")
+        self.assertNotIn("chat_template_kwargs", seen[-1])
+        self.assertNotIn("repetition_penalty", seen[-1])
+
+    def test_降级后仍保留标准字段(self):
+        _, seen = self._call(reject_vendor=True)
+        for k in ("model", "messages", "max_tokens", "temperature"):
+            self.assertIn(k, seen[-1], f"降级把标准字段 {k} 也弄丢了")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

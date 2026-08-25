@@ -95,6 +95,20 @@ def health_ok():
     except Exception:
         return False
 
+# vLLM 扩展字段:本机大脑要它们(关思考、防 8bit 重复退化),但 OpenAI / DeepSeek 这类
+# 严格端点会对未知参数回 400。CAPTION_LLM_URL 是让用户随便填的,不能假设对端是 vLLM,
+# 所以被拒了就脱掉重试。caption_core.translate 里有同样的处理。
+VENDOR_FIELDS = ("repetition_penalty", "chat_template_kwargs")
+
+
+def _post(url, body, timeout=600):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
 def ask(system, user, max_tokens=2200, temperature=0.3, think=False):
     body = {
         "model": MODEL,
@@ -107,23 +121,31 @@ def ask(system, user, max_tokens=2200, temperature=0.3, think=False):
             {"role": "user", "content": user},
         ],
     }
-    req = urllib.request.Request(
-        API, data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"})
+    plain = {k: v for k, v in body.items() if k not in VENDOR_FIELDS}
+
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                out = json.load(r)
-            content = out["choices"][0]["message"].get("content") or ""
-            # 偶发关不干净的思考标签，剥掉
-            content = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
-            content = re.sub(r"^<think>.*$", "", content, flags=re.S).strip()
-            if content:
-                return content
+            out = _post(API, body)
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 422) and body is not plain:
+                log("  (对端不认 vLLM 扩展字段，脱掉后重试)")
+                body = plain                              # 之后一直用精简版
+                continue
+            log(f"  (第{attempt+1}次请求失败: {e}，重试)")
+            time.sleep(2)
+            continue
         except Exception as e:
             log(f"  (第{attempt+1}次请求失败: {e}，重试)")
             time.sleep(2)
+            continue
+        content = out["choices"][0]["message"].get("content") or ""
+        # 偶发关不干净的思考标签，剥掉
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+        content = re.sub(r"^<think>.*$", "", content, flags=re.S).strip()
+        if content:
+            return content
     log("❌ 大脑没返回内容"); sys.exit(1)
+
 
 # ---------- 分块 ----------
 def split_chunks(text, size=CHUNK_CHARS):
