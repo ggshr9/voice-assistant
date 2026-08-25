@@ -98,5 +98,26 @@ class TestStructure(unittest.TestCase):
                       "以普通用户绑 443 必须有这个 capability")
 
 
+class TestLaunchAgents(unittest.TestCase):
+    """macOS 的 plist 同理：不能写死某个人的家目录。"""
+
+    PLISTS = sorted((REPO / "launchagents").glob("*.plist"))
+
+    def test_没有写死的家目录(self):
+        for p in self.PLISTS:
+            self.assertNotRegex(p.read_text(encoding="utf-8"), r"/Users/[A-Za-z0-9_.-]+",
+                                f"{p.name} 里写死了某人的家目录")
+
+    def test_渲染后是合法plist(self):
+        import plistlib
+        for p in self.PLISTS:
+            rendered = p.read_text(encoding="utf-8").replace("__HOME__", "__HOME__")
+            self.assertNotIn("__HOME__", rendered)
+            try:
+                plistlib.loads(rendered.encode("utf-8"))
+            except Exception as e:                      # noqa: BLE001
+                self.fail(f"{p.name} 渲染后不是合法 plist：{e}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

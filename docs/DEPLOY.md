@@ -108,8 +108,12 @@ pyannote 条款是否已同意（真发一次带 token 的请求）、两个音�
 
 ### 常驻服务（可选）
 
+plist 里的 `__HOME__` **是占位符，必须先渲染**（跟服务器 systemd 同理）：
+
 ```bash
-cp launchagents/*.plist ~/Library/LaunchAgents/
+for f in launchagents/*.plist; do
+  sed "s|__HOME__|$HOME|g" "$f" > ~/Library/LaunchAgents/"$(basename "$f")"
+done
 launchctl load ~/Library/LaunchAgents/com.local.meeting-app.plist
 launchctl load ~/Library/LaunchAgents/com.local.caption.plist
 ```
