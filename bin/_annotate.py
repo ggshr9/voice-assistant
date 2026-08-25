@@ -57,17 +57,33 @@ def build_turns(segs):
     return turns
 
 
-def speaker_names(turns):
-    """SPEAKER_00 → 说话人A(按出场顺序;字母匿名牌,会后认出谁是谁再替换)。"""
-    names = {}
+def speaker_names(turns, identified=None):
+    """SPEAKER_00 → 显示名。
+
+    Args:
+        turns: build_turns 的结果。
+        identified: 声纹认出来的 ``{SPEAKER_xx: 真名}``。认出来的用真名，
+            认不出的仍是按出场顺序的匿名牌 `说话人A/B/C`。
+
+    匿名牌的字母**只在未识别者之间**顺序分配，所以一场会里可能是
+    「李四 / 说话人A / 张三 / 说话人B」——这是刻意的：字母只是占位，
+    不该因为有人被认出来就跳号。
+    """
+    identified = identified or {}
+    names, anon = {}, 0
     for spk, _ in turns:
-        if spk not in names:
-            i = len(names)
-            names[spk] = f"说话人{string.ascii_uppercase[i]}" if i < 26 else f"说话人{i + 1}"
+        if spk in names:
+            continue
+        if spk in identified:
+            names[spk] = identified[spk]
+        else:
+            names[spk] = (f"说话人{string.ascii_uppercase[anon]}" if anon < 26
+                          else f"说话人{anon + 1}")
+            anon += 1
     return names
 
 
-def write_annotated(json_path, out_dir):
+def write_annotated(json_path, out_dir, identified=None):
     """读转写 json,写 <名>_annotated.txt。没分人或只有一个说话人时返回 None 不写。
 
     单人时不写是刻意的:segment 文本没标点,不如带标点的纯 txt 好读,
@@ -80,7 +96,7 @@ def write_annotated(json_path, out_dir):
         return None
 
     turns = build_turns(segs)
-    names = speaker_names(turns)
+    names = speaker_names(turns, identified)
     if len(names) < 2:
         return None
 
@@ -96,7 +112,13 @@ def main(argv):
         print("用法: _annotate.py <转写.json> <输出目录>", file=sys.stderr)
         return 1
     json_path, out_dir = argv[0], argv[1]
-    path = write_annotated(json_path, out_dir)
+    identified = {}
+    if "--names" in argv:                       # SPEAKER_00=李四,SPEAKER_03=张三
+        for pair in argv[argv.index("--names") + 1].split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                identified[k.strip()] = v.strip()
+    path = write_annotated(json_path, out_dir, identified)
     if path:
         n = len(speaker_names(build_turns(json.load(open(json_path, encoding="utf-8"))
                                           .get("segments") or [])))

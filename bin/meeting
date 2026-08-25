@@ -82,6 +82,9 @@ else
   # 分人走 pyannote，需联网做 HEAD 校验（直连官方）；缓存命中后很快
 fi
 
+# 声纹向量落盘,供 who label / 自动识别用(shim 在分人那一次调用里截获)
+export MEETING_EMBED_OUT="$OUT/.embeddings.npz"
+
 echo "  文件: $FILE"
 # 跑转写；若开了分人却失败，自动降级纯转写离线重试
 if ! "${ASR[@]}" "$FILE" "${ARGS[@]}"; then
@@ -104,7 +107,13 @@ ls "$OUT" 2>/dev/null
 if [ "$DIARIZE" = 1 ]; then
   JSON="$(ls "$OUT"/*.json 2>/dev/null | head -1)"
   if [ -n "$JSON" ]; then
-    python3 "$REPO_DIR/bin/_annotate.py" "$JSON" "$OUT"
+    # 先用声纹认人：认出来的用真名，认不出的仍是 说话人A/B/C
+    NAMES="$(python3 "$REPO_DIR/bin/_identify.py" "$OUT" || true)"   # stderr 放行,让识别结果可见
+    if [ -n "$NAMES" ]; then
+      python3 "$REPO_DIR/bin/_annotate.py" "$JSON" "$OUT" --names "$NAMES"
+    else
+      python3 "$REPO_DIR/bin/_annotate.py" "$JSON" "$OUT"
+    fi
   fi
 fi
 

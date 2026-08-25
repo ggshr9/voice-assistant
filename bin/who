@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""who —— 管理声纹注册表，让会议转写自动认出每个人。
+
+注册**不需要任何人念稿子**：分人本来就为每个说话人产出一条 256 维向量，
+给某场会的说话人打上名字，等于一次性把这个人注册了。
+
+用法:
+  who list                                     # 看注册了谁
+  who label <转写目录> 说话人C 李四             # 从一场会里认领某个说话人
+  who label <转写目录> SPEAKER_03 张三 --me   # 顺便标明这是我本人
+  who enroll <音频> 张三 --me                 # 用一段单人录音注册(会先跑一遍转写)
+  who forget 李四                              # 整条删除
+
+打错了就对同一场会重打 —— 新向量会**追加**进那个人（既纠正也让它越用越准）。
+
+数据在 ~/.config/voiceprints.json，权限 600，不进 git。
+"""
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+EMBED_NAME = ".embeddings.npz"
+
+
+def _load_npz(transcript_dir):
+    import numpy as np
+    path = os.path.join(transcript_dir, EMBED_NAME)
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"❌ {transcript_dir} 里没有声纹向量（{EMBED_NAME}）。\n"
+            "   它是转写时顺带截获的——这场会可能是在该功能之前跑的，或者没开分人。\n"
+            "   重跑一次即可：meeting <音频> <人数>")
+    d = np.load(path, allow_pickle=True)
+    return d["embeddings"], [str(x) for x in d["labels"]]
+
+
+def _display_names(transcript_dir, labels):
+    """SPEAKER_00 ↔ 说话人A 的双向映射，跟 _annotate.py 用同一套顺序。"""
+    import glob
+    import json
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    spec = importlib.util.spec_from_loader(
+        "_annotate", SourceFileLoader("_annotate", os.path.join(here, "_annotate.py")))
+    ann = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ann)
+
+    js = sorted(glob.glob(os.path.join(transcript_dir, "*.json")))
+    if not js:
+        return {}, {}
+    with open(js[0], encoding="utf-8") as f:
+        segs = json.load(f).get("segments") or []
+    turns = ann.build_turns(segs)
+    to_display = ann.speaker_names(turns)                 # SPEAKER_xx -> 说话人A
+    to_raw = {v: k for k, v in to_display.items()}
+    return to_display, to_raw
+
+
+def cmd_list():
+    import _voiceprint as vp
+    people = vp.load_registry()
+    if not people:
+        print("注册表是空的。先跑：who label <转写目录> 说话人C 李四")
+        return 0
+    print(f"已注册 {len(people)} 人：\n")
+    for p in people:
+        mark = " ⭐我本人" if p.get("is_me") else ""
+        print(f"  {p['name']}{mark}")
+        print(f"     声纹 {len(p.get('embeddings') or [])} 条 · 更新于 {p.get('updated', '?')}")
+        for s in (p.get("sources") or []):
+            print(f"     ← {s}")
+    return 0
+
+
+def cmd_label(argv):
+    import _voiceprint as vp
+    if len(argv) < 3:
+        print("用法: who label <转写目录> <说话人C|SPEAKER_03> <名字> [--me]", file=sys.stderr)
+        return 1
+    d, speaker, name = os.path.abspath(argv[0]), argv[1], argv[2]
+    is_me = "--me" in argv
+
+    embeddings, labels = _load_npz(d)
+    to_display, to_raw = _display_names(d, labels)
+    raw = to_raw.get(speaker, speaker)                    # 说话人C → SPEAKER_xx
+    if raw not in labels:
+        known = "、".join(f"{to_display.get(l, l)}({l})" for l in labels)
+        print(f"❌ 这场会里没有「{speaker}」。有的是：{known}", file=sys.stderr)
+        return 1
+
+    idx = labels.index(raw)
+    source = f"{os.path.basename(d)}/{to_display.get(raw, raw)}"
+    people = vp.add_embedding(vp.load_registry(), name, embeddings[idx],
+                              source=source, is_me=is_me)
+    vp.save_registry(people)
+    who = f"{name}（我本人）" if is_me else name
+    print(f"✅ 已把 {to_display.get(raw, raw)} 认领为 {who}")
+    print(f"   来源：{source}")
+    print("   以后的会议会自动认出这个人。")
+    return 0
+
+
+def cmd_enroll(argv):
+    """用一段单人录音注册。内部就是跑一次 meeting 再 label，不另写一条 pyannote 路径。"""
+    if len(argv) < 2:
+        print("用法: who enroll <音频> <名字> [--me]", file=sys.stderr)
+        return 1
+    audio, name = os.path.abspath(argv[0]), argv[1]
+    if not os.path.exists(audio):
+        print(f"❌ 找不到音频：{audio}", file=sys.stderr)
+        return 1
+
+    out_dir = os.path.join(os.path.dirname(audio),
+                           "转写_" + os.path.splitext(os.path.basename(audio))[0])
+    print(f"▶ 先跑一遍转写取声纹（单人模式）…")
+    r = subprocess.run(["meeting", audio, "1", "nominutes"],
+                       stdout=subprocess.DEVNULL)
+    if r.returncode != 0 or not os.path.exists(os.path.join(out_dir, EMBED_NAME)):
+        print("❌ 转写没能产出声纹向量。", file=sys.stderr)
+        return 1
+
+    _, labels = _load_npz(out_dir)
+    return cmd_label([out_dir, labels[0], name] + (["--me"] if "--me" in argv else []))
+
+
+def cmd_forget(argv):
+    import _voiceprint as vp
+    if not argv:
+        print("用法: who forget <名字>", file=sys.stderr)
+        return 1
+    name = argv[0]
+    people = vp.load_registry()
+    if not any(p.get("name") == name for p in people):
+        print(f"注册表里没有「{name}」。")
+        return 0
+    vp.save_registry(vp.forget(people, name))
+    print(f"✅ 已删除 {name} 的全部声纹。")
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "list":
+        return cmd_list()
+    if cmd == "label":
+        return cmd_label(rest)
+    if cmd == "enroll":
+        return cmd_enroll(rest)
+    if cmd == "forget":
+        return cmd_forget(rest)
+    print(f"未知命令：{cmd}（可用：list / label / enroll / forget）", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

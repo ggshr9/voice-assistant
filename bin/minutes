@@ -202,6 +202,23 @@ def make_record(text):
     return "\n".join(parts)
 
 # ---------- TTS（可选）----------
+def auto_me(text):
+    """没传 --me 时，从声纹注册表里认出「我」。
+
+    标注稿里如果已经是真名（声纹认出来的），直接拿注册表里标了 is_me 的那个名字。
+    认不出或没注册就返回 None，退回原来的匿名行为。
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+        import _voiceprint as vp
+        mine = vp.me_name(vp.load_registry())
+        if mine and mine in text:
+            return mine
+    except Exception:
+        pass
+    return None
+
+
 def register_index(out_dir, title=None):
     """纪要写完后登记进 ~/会议录音/索引.json —— 让 recall 能找到这场会。
 
@@ -273,7 +290,11 @@ def main():
         log("⚠️ 转写文本太短，可能转写失败。"); sys.exit(1)
     log(f"📄 来源: {src}（{len(text)} 字）")
 
-    if me:
+    if not me:
+        me = auto_me(text)          # 声纹认出来的话，不用再手动传 --me
+        if me:
+            log(f"🔊 声纹已认出「{me}」是我本人，待办将据此区分我的/他人")
+    elif me:
         log(f"🙋 已指定「{me}」为我本人，待办将据此区分我的/他人")
     ensure_llm()
     md = make_minutes(text, me)

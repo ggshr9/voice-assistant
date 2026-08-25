@@ -129,6 +129,45 @@ class TestWriteAnnotated(unittest.TestCase):
         fp = self._json([{"text": "没分人"}])
         self.assertIsNone(annotate.write_annotated(fp, str(self.d)))
 
+class TestIdentifiedNames(unittest.TestCase):
+    """声纹认出来的人用真名，认不出的仍是匿名牌。"""
+
+    def test_认出来的用真名(self):
+        turns = [("SPEAKER_00", "a"), ("SPEAKER_01", "b")]
+        names = annotate.speaker_names(turns, {"SPEAKER_01": "李四"})
+        self.assertEqual(names, {"SPEAKER_00": "说话人A", "SPEAKER_01": "李四"})
+
+    def test_匿名牌字母只在未识别者之间顺序分配(self):
+        """认出来的人不占字母 —— 否则一场会里会出现「李四 / 说话人B」这种跳号。"""
+        turns = [("S0", "a"), ("S1", "b"), ("S2", "c")]
+        names = annotate.speaker_names(turns, {"S1": "李四"})
+        self.assertEqual(names["S0"], "说话人A")
+        self.assertEqual(names["S1"], "李四")
+        self.assertEqual(names["S2"], "说话人B")
+
+    def test_全部认出来时没有匿名牌(self):
+        turns = [("S0", "a"), ("S1", "b")]
+        names = annotate.speaker_names(turns, {"S0": "甲", "S1": "乙"})
+        self.assertEqual(set(names.values()), {"甲", "乙"})
+
+    def test_不传映射时行为不变(self):
+        turns = [("S0", "a"), ("S1", "b")]
+        self.assertEqual(annotate.speaker_names(turns),
+                         {"S0": "说话人A", "S1": "说话人B"})
+
+    def test_写出的稿子里是真名(self):
+        import json as _json, tempfile, pathlib as _p
+        with tempfile.TemporaryDirectory() as d:
+            fp = _p.Path(d) / "会.json"
+            fp.write_text(_json.dumps({"segments": [
+                {"speaker": "SPEAKER_00", "text": "开始吧"},
+                {"speaker": "SPEAKER_01", "text": "好的"}]}, ensure_ascii=False),
+                encoding="utf-8")
+            out = annotate.write_annotated(str(fp), d, {"SPEAKER_00": "李四"})
+            text = _p.Path(out).read_text(encoding="utf-8")
+            self.assertIn("李四：开始吧", text)
+            self.assertIn("说话人A：好的", text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
