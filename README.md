@@ -24,6 +24,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install mlx-qwen3-asr vllm-mlx
 
 ./install.sh          # 把 bin/* 软链到 ~/.local/bin
+setup                 # 自检：逐项告诉你缺什么、怎么补
 llm start             # 拉起本地大脑（vllm-mlx + Qwen3.6-35B-A3B-8bit，:8080）
 
 rec online            # 录线上会议（需音频MIDI里建好聚合设备「会议录制」）
@@ -45,6 +46,7 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 - `dictate` — 全局语音听写，热键切换式，转写后粘贴到光标处
 - `chat` / `ask` — 连续对话，语音版 / 打字版双胞胎
 - `va` — 全本地语音助手「小麦」
+- `setup` — **装完跑一次自检**。逐项实际去连、去查：工具链、模型、HF token、pyannote 条款是否已同意、两个音频设备在不在、大脑起没起。缺什么直接给命令。`setup --token hf_xxx` 写配置
 - `who` — **声纹注册表**：`who label <转写目录> 说话人C 李四` 从一场会里认领某人（不需要谁念稿子）、`who enroll <音频> 我 --me`、`who list`、`who forget`
 - `recall "问题"` — **用自然语言问过去的会议**。两段式检索：先用标题+摘要选出相关的会，再把那几场全文喂给大脑作答并标出处。`recall --list` 列出全部
 - `clone <参考音> <原文> <新内容>` — 声音克隆（IndexTTS-1.5）

@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""setup —— 装完之后跑一次，看看到底能不能用。
+
+不是填表，是**自检**：这套东西的坑几乎都属于「填了也不知道对不对」——
+pyannote 条款没同意会静默降级成纯转写、音频设备名差一个字就找不到、
+配置指向的隧道其实没开。这些必须实际连一次、查一次才知道。
+
+用法:
+  setup                      # 体检，逐项报告并给出怎么修
+  setup --token hf_xxx       # 写入 HF token（存 ~/.config/voice-assistant.env，权限 600）
+  setup --set K=V            # 写入任意配置项，可重复
+  setup --show               # 看当前配置（token 打码）
+"""
+import os
+import subprocess
+import sys
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import _setup as S  # noqa: E402
+
+GATE_MODEL = "pyannote/speaker-diarization-community-1"
+
+
+def _have(cmd):
+    return subprocess.run(["which", cmd], capture_output=True).returncode == 0
+
+
+def _list_audio_inputs():
+    r = subprocess.run(["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+                       capture_output=True, text=True, timeout=20)
+    return r.stderr
+
+
+def _list_audio_outputs():
+    """多输出设备「会议外放」是输出侧的，ffmpeg 的 -list_devices 看不到。"""
+    r = subprocess.run(["SwitchAudioSource", "-a", "-t", "output"],
+                       capture_output=True, text=True, timeout=10)
+    return r.stdout
+
+
+def _brain_alive():
+    with urllib.request.urlopen("http://127.0.0.1:8080/v1/models", timeout=3) as r:
+        return "qwen" in r.read().decode("utf-8", "ignore").lower()
+
+
+def _gate_ok(token):
+    """真去查一次门控仓库的元数据 —— 没同意条款会 401/403。"""
+    if not token:
+        return False
+    req = urllib.request.Request(
+        f"https://huggingface.co/api/models/{GATE_MODEL}",
+        headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status == 200
+
+
+def run_checks():
+    env = S.read_env()
+    token = env.get("HF_TOKEN") or os.environ.get("HF_TOKEN") or ""
+    return [
+        S.check_command("ffmpeg", _have("ffmpeg"), "brew install ffmpeg"),
+        S.check_command("uv", _have("uv"), "curl -LsSf https://astral.sh/uv/install.sh | sh"),
+        S.check_command("mlx-qwen3-asr", _have("mlx-qwen3-asr"),
+                        "uv tool install mlx-qwen3-asr"),
+        S.check_command("SwitchAudioSource", _have("SwitchAudioSource"),
+                        "brew install switchaudio-osx（只影响 rec online 自动切输出）"),
+        S.check_models(),
+        S.check_token(env),
+        S.check_gate(lambda: _gate_ok(token)),
+        S.check_audio_devices(_list_audio_inputs, _list_audio_outputs),
+        S.check_brain(_brain_alive),
+    ]
+
+
+ICON = {S.OK: "✅", S.MISSING: "❌", S.OPTIONAL: "⚠️ "}
+
+
+def cmd_check():
+    checks = run_checks()
+    print("\nvoice-assistant 自检\n" + "─" * 52)
+    for c in checks:
+        print(f"{ICON[c.status]} {c.name:<18} {c.detail}")
+        if c.fix:
+            print(f"       ↳ {c.fix}")
+    print("─" * 52)
+    if S.usable(checks):
+        opt = [c.name for c in checks if c.optional]
+        print("可以用了。" + (f"（{'、'.join(opt)} 缺失，只影响对应功能）" if opt else ""))
+        print("\n试一下：rec  →  meeting ~/会议录音/xxx.m4a  →  recall \"刚才说了什么\"")
+        return 0
+    print("还不能用 —— 上面标 ❌ 的是必需项。")
+    return 1
+
+
+def cmd_set(pairs):
+    env = S.read_env()
+    for pair in pairs:
+        if "=" not in pair:
+            print(f"格式应为 K=V，收到：{pair}", file=sys.stderr)
+            return 1
+        k, v = pair.split("=", 1)
+        env[k.strip()] = v
+    path = S.write_env(env)
+    print(f"✅ 已写入 {path}（权限 600）")
+    print("   各脚本会 source 它；单独的 caption.env 等仍可覆盖。")
+    return 0
+
+
+def cmd_show():
+    env = S.read_env()
+    if not env:
+        print(f"{S.CONFIG} 还不存在。跑 `setup --token hf_xxx` 建一个。")
+        return 0
+    print(f"{S.CONFIG}：")
+    for k, v in env.items():
+        masked = (v[:6] + "…" + v[-4:]) if ("TOKEN" in k or "KEY" in k) and len(v) > 12 else v
+        print(f"  {k} = {masked}")
+    return 0
+
+
+def main(argv):
+    if not argv:
+        return cmd_check()
+    if argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if argv[0] == "--show":
+        return cmd_show()
+    if argv[0] == "--token":
+        if len(argv) < 2:
+            print("用法: setup --token hf_xxx", file=sys.stderr)
+            return 1
+        return cmd_set([f"HF_TOKEN={argv[1]}"])
+    if argv[0] == "--set":
+        return cmd_set(argv[1:])
+    print(f"未知参数：{argv[0]}（可用：--token / --set / --show）", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

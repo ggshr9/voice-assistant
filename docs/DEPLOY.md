@@ -42,8 +42,49 @@ brew install --cask blackhole-2ch
 2. 拿一个有 read 权限的 HF token，写进 shell 配置：`export HF_TOKEN=hf_xxx`
 3. 没有 token 或没同意条款时，`meeting` 会**自动降级为纯转写**，不会报错卡住
 
-**模型**放 `~/models/`：`Qwen3.6-35B-A3B-8bit`（主力大脑，~38GB，带视觉编码器）、`Kokoro-82M-bf16`（TTS）、`IndexTTS-1.5`（克隆）。
-ASR 权重走 HF 缓存，首次运行自动下载。
+### 模型
+
+**先看硬件够不够** —— 这是真正的门槛，不是配置问题：
+
+| | 磁盘 | 常驻内存 |
+|---|---|---|
+| `Qwen3.6-35B-A3B-8bit` 主力大脑 | 35 GB | **36.8 GB**（实测） |
+| ASR / 分人 / 对齐器（HF 缓存，自动下载） | ~7 GB | 用时才加载 |
+| TTS 与声音克隆（可选） | ~6 GB | 用时才加载 |
+
+**64 GB 内存是下限，32 GB 跑不动 35B。** 内存不够就把 `minutes` / `recall` 指向别的
+OpenAI 兼容端点（改 `bin/minutes` 顶部的 `API`），或换个小模型——转写、分人、声纹
+这些都跟大脑无关，照样能用。
+
+**国内先配镜像**（HF 直连很慢或不通）：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com     # 写进 ~/.zshrc
+```
+
+> ⚠️ 但 **pyannote 门控模型要走官方直连** —— 镜像拿不到门控仓库。
+> `bin/meeting` 里已经写死了 `HF_ENDPOINT=https://huggingface.co` 来绕开这点。
+
+**自动下载的（不用管）**：`mlx-community/Qwen3-ASR-1.7B-8bit`（转写）、
+`Qwen/Qwen3-ForcedAligner-0.6B`（词级时间戳）、`pyannote/speaker-diarization-community-1`
+（分人，需先同意条款）、`mlx-community/whisper-large-v3-turbo`（实时字幕的本机 STT）。
+
+**要手工放进 `~/models/` 的**：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+uv tool install huggingface-hub
+
+# 主力大脑：MoE 架构、8bit(group_size 64)、含视觉编码器（名字没 VL 但权重里有 vision_tower）
+hf download mlx-community/Qwen3.6-35B-A3B-8bit --local-dir ~/models/Qwen3.6-35B-A3B-8bit
+
+# 以下都是可选，只影响 clone / va / chat 这几个语音功能
+hf download mlx-community/Kokoro-82M-bf16 --local-dir ~/models/Kokoro-82M-bf16
+hf download IndexTeam/IndexTTS-1.5       --local-dir ~/models/IndexTTS-1.5
+```
+
+35 GB 那个建议用 `aria2c` 多线程拉（`hf download` 支持 `HF_HUB_ENABLE_HF_TRANSFER=1`），
+不然国内单线程要很久。目录名必须与上面一致——`bin/llm`、`bin/clone` 里是写死的。
 
 ### 安装
 
@@ -52,7 +93,18 @@ git clone <repo> ~/voice-assistant && cd ~/voice-assistant
 ./install.sh          # 把 bin/* 软链到 ~/.local/bin
 ```
 
-确认 `~/.local/bin` 在 PATH 里。
+确认 `~/.local/bin` 在 PATH 里，然后跑自检：
+
+```bash
+setup
+```
+
+它会**实际去连、去查**每一项（不是让你填表）：工具链在不在、模型齐不齐、HF token 有没有、
+pyannote 条款是否已同意（真发一次带 token 的请求）、两个音频设备在不在、大脑起没起。
+缺什么直接把命令给你。
+
+配置统一写在 `~/.config/voice-assistant.env`（权限 600）：`setup --token hf_xxx`、
+`setup --set K=V`、`setup --show`。已有的 `caption.env` 等仍可覆盖它。
 
 ### 常驻服务（可选）
 
