@@ -5,28 +5,49 @@
 #   sync-web          # 拉回(默认)
 #   sync-web --check  # 只看差异,不改动
 #
+# 同步方向有两个,别搞混:
+#   拉(pull):web/ 与 voice-svc 的服务代码 —— 真源在服务器,在那台机器上迭代
+#   推(push):prompts.py —— 真源在本仓库。纪要 prompt 属于产品决策,该跟仓库走版本;
+#            两边曾各存一份,实测 FINAL_SYS 漂移到只剩 66% 相似
+#
 # 排除项是安全边界,不要删:
 #   secrets.env  含 CAPTION_LLM_KEY / CAPTION_ACCESS_PW
 #   *.pem        TLS 私钥与证书
-# 拉回后务必复查内网地址:服务器版把 10.0.0.1 写成了 env 默认值,
+# 拉回后务必复查内网地址:服务器版把内网网关写成了 env 默认值,
 # 仓库里必须保持「默认空 + 缺失即报错」,否则一转公开就是内网拓扑泄漏。
 set -e
 REMOTE="${SYNC_WEB_REMOTE:-gpu-server}"
 SRC="$REMOTE:~/voice-svc/web/"
-DST="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")/.." && pwd)/web/"
+REPO="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+DST="$REPO/web/"
+SVC_DST="$REPO/server/"     # voice-svc 根上的服务代码(STT 服务 / 启动脚本 / systemd unit)
 
 RSYNC_ARGS=(-az --delete
   --exclude='secrets.env' --exclude='*.pem'
-  --exclude='__pycache__' --exclude='.bak')
+  --exclude='__pycache__' --exclude='.bak' --exclude='*.bak-*')
 
 if [ "$1" = "--check" ]; then
   echo "▶ 与 $REMOTE 的差异（不改动本地）："
   rsync "${RSYNC_ARGS[@]}" --dry-run -i -e ssh "$SRC" "$DST"
+  echo "（prompts.py 为推送方向，不在此比对）"
   exit 0
 fi
 
+echo "▶ 推 prompts.py 到 ${REMOTE}（纪要 prompt 以仓库为准）…"
+scp -q "$REPO/prompts.py" "$REMOTE:~/voice-svc/prompts.py"
+
 echo "▶ 从 $REMOTE 拉回 web/ …"
 rsync "${RSYNC_ARGS[@]}" -e ssh "$SRC" "$DST"
+
+echo "▶ 拉回 voice-svc 根上的服务代码 …"
+mkdir -p "$SVC_DST"
+rsync -az -e ssh \
+  --exclude='__pycache__' --exclude='*.bak-*' \
+  "$REMOTE:~/voice-svc/stt_server_cuda.py" \
+  "$REMOTE:~/voice-svc/run_stt.sh" \
+  "$SVC_DST"
+rsync -az --delete -e ssh --exclude='__pycache__' \
+  "$REMOTE:~/voice-svc/systemd/" "$SVC_DST/systemd/"
 
 # 服务器版把内网网关写成了 env 默认值。仓库必须保持「默认空 + 缺失即报错」,
 # 所以每次同步都就地洗一遍 —— 否则每拉一次就把内网拓扑带回来一次。
@@ -45,7 +66,7 @@ PYEOF
 
 echo "▶ 复查凭据与内网地址 …"
 BAD=0
-grep -rn "10\.84\.\|195\.133\." "$DST" 2>/dev/null && BAD=1
+grep -rn "10\.84\.\|195\.133\." "$DST" "$SVC_DST" 2>/dev/null && BAD=1
 grep -rlE "BEGIN .*PRIVATE KEY|sk-[A-Za-z0-9]{16}" "$DST" 2>/dev/null && BAD=1
 ls "$DST"/secrets.env "$DST"/*.pem 2>/dev/null && BAD=1
 if [ "$BAD" = 1 ]; then

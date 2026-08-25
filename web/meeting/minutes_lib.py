@@ -1,6 +1,12 @@
 """合并转写+分人 → 说话人A/B/C 标注稿;调网关 Qwen3.6 出会议纪要 + 会议记录。
 LLM 走 litellm 网关(env: CAPTION_LLM_URL / CAPTION_LLM_KEY / CAPTION_LLM_MODEL)。"""
-import os, re, json, time, string, urllib.request
+import os, re, json, sys, time, string, urllib.request
+
+# 纪要 prompt 与本机 CLI 共用同一份,别在这里另存 —— 两边曾各存各的,实测已漂移。
+# 真源在仓库根 prompts.py,由 sync-web 推到 ~/voice-svc/prompts.py。
+# dirname x3: web/meeting -> web -> voice-svc(本机则是仓库根),两边同一份代码都成立。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, me_instruction
 from collections import Counter
 
 LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
@@ -98,12 +104,6 @@ def split_chunks(text, size):
 
 
 # ---------- 会议纪要 ----------
-NOTE_SYS = ("你是会议记录助理。把这段会议转写片段提炼成要点笔记,保留:讨论的话题、各方观点、"
-            "做出的决定、提到的待办和负责人、数字与时间。用简洁中文分条列出,不要寒暄。")
-FINAL_SYS = ("你是资深会议纪要撰写者。基于提供的会议内容,输出结构化中文纪要 Markdown。严格按结构,"
-             "不要寒暄、不要编造:\n\n## 一句话摘要\n\n## 关键决议\n- (没有写「本次无明确决议」)\n\n"
-             "## 待办事项\n用表格:| 事项 | 负责人 | 期限 |,负责人是「我」标 **我**,没期限写「—」。\n\n"
-             "## 讨论要点\n按话题分小节,各方观点要点列出。\n\n## 风险 / 待澄清\n- (没有就省略本节)\n")
 
 
 def make_minutes(text, me=None, log=print):
@@ -122,13 +122,6 @@ def make_minutes(text, me=None, log=print):
 
 
 # ---------- 会议记录(忠实还原)----------
-RECORD_SYS = (
-    "你在整理会议的【逐字记录】,不是摘要。输入有识别错误、噪音字、缺标点,每行以「说话人X：」标注。\n"
-    "请尽量【还原】成可读对话:1) 逐行保留每人全部内容,不概括不删减不合并不同人;2) 补标点、修同音字、"
-    "删「嘶嘶嘶」类噪音和口水重复;3) 听不清/拿不准处就地加「[?…]」写你的判断或存疑,鼓励多标,不算编造;"
-    "4) 不凭空加没出现的句子;5) 严格按「说话人X：内容」逐行输出,不加标题。\n\n示例——\n"
-    "输入:\n说话人A：好现在打给他OK嘶嘶嘶嘶\n说话人C：嘶嘶嗯是马内几次你吃\n输出:\n"
-    "说话人A：好,现在打给他,OK。\n说话人C：嗯,是。[?听不清,疑为'某地区']你吃?")
 
 
 def _denoise(text):

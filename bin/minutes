@@ -21,6 +21,11 @@ minutes — 把会议转写文本变成结构化纪要（全本地，喂 vllm-ml
 """
 import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
 
+# 纪要 prompt 与服务器网页版共用同一份(仓库根 prompts.py),别在这里另存一份 ——
+# 两边曾各存各的,实测 FINAL_SYS 已漂移到只剩 66% 相似。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, me_instruction
+
 API = "http://127.0.0.1:8080/v1/chat/completions"
 HEALTH = "http://127.0.0.1:8080/v1/models"
 MODEL = "qwen3.6"
@@ -137,26 +142,11 @@ def split_chunks(text, size=CHUNK_CHARS):
         parts.append(cur)
     return parts
 
-NOTE_SYS = ("你是会议记录助理。把这段会议转写片段提炼成要点笔记，"
-            "保留：讨论的话题、各方观点、做出的决定、提到的待办和负责人、数字与时间。"
-            "用简洁中文分条列出，不要寒暄，不要总结成段落。")
 
-FINAL_SYS = ("你是资深会议纪要撰写者。基于提供的会议内容，输出一份结构化中文纪要 Markdown。"
-             "严格按以下结构，不要加额外标题、不要寒暄、不要编造没提到的信息：\n\n"
-             "## 一句话摘要\n（一句话说清这次会议的核心）\n\n"
-             "## 关键决议\n- （逐条列出明确做出的决定；没有就写「本次无明确决议」）\n\n"
-             "## 待办事项\n"
-             "用表格：| 事项 | 负责人 | 期限 |，负责人是「我」的标注为 **我**；没提期限写「—」。\n\n"
-             "## 讨论要点\n按话题分小节，每个话题下用要点列出各方观点。\n\n"
-             "## 风险 / 待澄清\n- （遗留问题、分歧、需后续确认的点；没有就省略本节）\n")
 
 def make_minutes(text, me=None):
     text = _denoise(text)        # 幻觉噪音先清掉再喂 LLM(实测能占掉 5.5% 的上下文)
-    final_sys = FINAL_SYS
-    if me:
-        final_sys += (f"\n\n**重要**：转写中标记为「{me}」的说话人就是「我」本人。"
-                      f"在「待办事项」表格里，「{me}」名下要做的事，负责人一律写 **我**；"
-                      f"其他说话人写其代号或姓名，不要写「我」。")
+    final_sys = FINAL_SYS + me_instruction(me)
     chunks = split_chunks(text)
     if len(chunks) == 1:
         log("📝 单次生成纪要 …")
@@ -176,23 +166,6 @@ def make_minutes(text, me=None):
 # ---------- 会议记录（LLM 忠实还原，不概括）----------
 RECORD_CHARS = 3000      # 还原是逐句输出≈等长，块要小、max_tokens 要大（防截断）
 
-RECORD_SYS = (
-    "你在整理会议的【逐字记录】，不是写摘要。输入是会议语音转写，"
-    "有识别错误、噪音字、缺标点、口水重复，每行以「说话人X：」标注说话人。\n"
-    "请尽量把它【还原】成可读的对话记录，规则：\n"
-    "1) 逐行保留每个说话人说的全部内容，不概括、不删减、不合并不同人的话；顺序不变；\n"
-    "2) 补标点、修同音字、删掉「嘶嘶嘶」这类纯噪音和明显口水重复，让句子通顺；\n"
-    "3) **听不清/拿不准/疑似听岔的地方，必须就地加「[?…]」写出你的判断或存疑** —— 这是标注你的理解，不算编造，鼓励多标；\n"
-    "   例：听到「马内几次」→「[?疑为'某地区']」；整段含糊→「[?听不清]」；\n"
-    "4) 不要凭空添加没出现过的句子；\n"
-    "5) 严格按「说话人X：内容」逐行输出，不要加标题/说明。\n\n"
-    "示例——\n"
-    "输入：\n"
-    "说话人A：好现在打给他OK嘶嘶嘶嘶嘶嘶\n"
-    "说话人C：嘶嘶嘶嘶嗯是马内几次你吃不要那么吃吃有点太多\n"
-    "输出：\n"
-    "说话人A：好，现在打给他，OK。\n"
-    "说话人C：嗯，是。[?听不清，疑为'某地区']你吃不吃？不要那么……吃有点太多。[?这段含糊]")
 
 
 def _collapse_cycles(s):

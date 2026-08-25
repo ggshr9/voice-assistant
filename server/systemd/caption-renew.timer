@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily caption cert renew
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=3600
+Persistent=true
+[Install]
+WantedBy=timers.target

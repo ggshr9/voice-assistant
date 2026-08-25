@@ -52,6 +52,14 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 **为什么不上向量库**：会议是几十到几百场量级，全部摘要加起来才几 KB，本来就塞得进上下文；而检索真正需要的是「读懂」不是「找相似」。多一个嵌入模型 + 索引库，换不来准确率，只增加两个会坏的东西。
 
+### 共享 prompt
+
+`prompts.py`（仓库根）是纪要 prompt 的**唯一真源**，本机 CLI 与服务器网页版都从它导入。
+
+两边曾各存一份、谁也没同步谁 —— 实测 `FINAL_SYS` 漂移到只剩 66% 相似，而服务器那份是活的（`sessions/` 里最近一场真实会议 2026-07-02），也就是走网页版的会一直用着旧 prompt。`tests/test_prompt_drift.py` 现在会在任何一边重新自存 prompt 时失败。
+
+⚠️ **它的同步方向与 `web/` 相反**：`web/` 的真源在服务器（拉回），`prompts.py` 的真源在仓库（`sync-web` 推过去）。理由是 prompt 属于产品决策，该跟仓库走版本。
+
 ### MCP server（给 agent 用）
 
 ```bash
@@ -81,7 +89,7 @@ stdlib 手写 JSON-RPC 2.0 over stdio，不依赖 mcp SDK，零外部依赖（�
 ### 网页版（`web/`）
 - `web_caption.py` — aiohttp + WSS：浏览器推 16k PCM → VAD 切句 → faster-whisper(CUDA) → 网关翻译 → 推回 `{orig, zh}`
 - `config.py` / `jobs.py` / `sessions.py` / `stt.py` — 共享配置、任务队列、会话与录音留存、STT 封装
-- `run_web.sh` — 启动脚本（systemd unit 在服务器 `~/voice-svc/systemd/`）
+- `run_web.sh` — 启动脚本；`server/` 是 `~/voice-svc` 根上的服务代码（`stt_server_cuda.py` / `run_stt.sh` / 3 个 systemd unit），也由 `sync-web` 拉回
 - `web/meeting/` — 会议批处理流水线：`transcribe_step` / `diarize_step` / `asr_diarize_step` / `minutes_lib` / `meeting_pipeline`
 
 > 网页版跑在公司内网那台 GPU 机器上（`ssh gpu-server` → `gpu-box`，2× RTX 4090），代码在那边的 `~/voice-svc/`：faster-whisper + pyannote + CUDA，纪要走 litellm 网关。与本机 MLX 那套是两条独立实现。
@@ -132,6 +140,7 @@ uv run tests/test_annotate.py          # 词级 segment → 说话人标注稿�
 uv run tests/test_index.py             # 会议索引：解析纪要/起标题/去重/渲染
 uv run tests/test_recall.py            # 检索：目录渲染/抠编号/关键词兜底/拼上下文
 uv run tests/test_mcp.py               # MCP 协议握手/工具分发/错误路径
+uv run tests/test_prompt_drift.py      # prompt 只有一份（两边都不许自存）
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）
 uv run tests/test_caption_core.py      # 字幕纯逻辑

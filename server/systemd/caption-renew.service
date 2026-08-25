@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew caption cert
+[Service]
+Type=oneshot
+User=nategu
+ExecStart=__HOME__/.local/bin/certbot renew --config-dir __HOME__/voice-svc/le --work-dir __HOME__/voice-svc/le-work --logs-dir __HOME__/voice-svc/le-logs --quiet
+ExecStartPost=/usr/bin/pkill -f web_caption.py
