@@ -14,7 +14,15 @@
 
 ## 快速开始
 
+> 完整的前置条件、服务器部署、灾难恢复清单见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
+> 下面这段假设你已经装好 Homebrew / ffmpeg / uv，建好了聚合设备，并同意了 pyannote 的模型条款。
+
 ```bash
+brew install ffmpeg switchaudio-osx
+brew install --cask blackhole-2ch     # 录线上会议必需
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install mlx-qwen3-asr vllm-mlx
+
 ./install.sh          # 把 bin/* 软链到 ~/.local/bin
 llm start             # 拉起本地大脑（vllm-mlx + Qwen3.6-35B-A3B-8bit，:8080）
 

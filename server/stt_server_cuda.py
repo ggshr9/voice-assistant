@@ -13,7 +13,7 @@ from flask import Flask, request, jsonify
 from faster_whisper import WhisperModel
 
 MODEL = os.environ.get("STT_MODEL", "large-v3-turbo")
-HOST = os.environ.get("STT_HOST", "10.0.0.2")   # tailscale IP only (not 0.0.0.0)
+HOST = os.environ.get("STT_HOST", "127.0.0.1")   # 部署时用 STT_HOST 指定   # tailscale IP only (not 0.0.0.0)
 PORT = int(os.environ.get("STT_PORT", "8090"))
 print(f"loading {MODEL} on CUDA ...", flush=True)
 m = WhisperModel(MODEL, device="cuda", compute_type="float16")

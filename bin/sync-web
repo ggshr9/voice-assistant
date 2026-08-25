@@ -21,6 +21,9 @@
 # 拉回后务必复查内网地址:服务器版把内网网关写成了 env 默认值,
 # 仓库里必须保持「默认空 + 缺失即报错」,否则一转公开就是内网拓扑泄漏。
 set -e
+# 服务器地址不写死在仓库里(那是你的网络拓扑,不该公开)。
+# 优先级:环境变量 > ~/.config/sync-web.env > 占位默认值
+[ -f "$HOME/.config/sync-web.env" ] && . "$HOME/.config/sync-web.env"
 REMOTE="${SYNC_WEB_REMOTE:-gpu-server}"
 SRC="$REMOTE:~/voice-svc/web/"
 REPO="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -67,13 +70,17 @@ rsync -az --delete -e ssh --exclude='__pycache__' \
 # 服务器版把内网网关写成了 env 默认值。仓库必须保持「默认空 + 缺失即报错」,
 # 所以每次同步都就地洗一遍 —— 否则每拉一次就把内网拓扑带回来一次。
 echo "▶ 洗掉内网默认地址 …"
-python3 - "$DST" <<'PYEOF'
+python3 - "$DST" "$SVC_DST" <<'PYEOF'
 import pathlib, re, sys
-root = pathlib.Path(sys.argv[1])
+roots = [pathlib.Path(a) for a in sys.argv[1:] if pathlib.Path(a).exists()]
 pat = re.compile(r'os\.environ\.get\((\s*"CAPTION_LLM_URL"\s*),\s*"http://[\d.]+:\d+[^"]*"\)')
-for f in root.rglob("*.py"):
+# 绑定地址同理:服务器上写的是真实内网/Tailscale 地址,仓库里不该有
+host = re.compile(r'os\.environ\.get\((\s*"STT_HOST"\s*),\s*"(?!127\.0\.0\.1|0\.0\.0\.0)[^"]*"\)')
+for root in roots:
+  for f in root.rglob("*.py"):
     s = f.read_text(encoding="utf-8")
     new = pat.sub(r'os.environ.get(\1, "")   # 必须显式配置(线上由 secrets.env 注入)', s)
+    new = host.sub(r'os.environ.get(\1, "127.0.0.1")   # 部署时用 STT_HOST 指定', new)
     if new != s:
         f.write_text(new, encoding="utf-8")
         print(f"   洗净 {f.relative_to(root.parent)}")
