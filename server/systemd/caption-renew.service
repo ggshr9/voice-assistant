@@ -1,7 +1,11 @@
+# 占位符 __USER__ / __HOME__ 必须先替换成真实值再安装。
+# systemd 系统级 unit 里 %h 会解析成 /root、%i 只在模板单元有效，
+# 所以这里不用 systemd 的 specifier，用显式占位更不容易出错。
+# 渲染：见 docs/DEPLOY.md「systemd」一节的 sed 命令。
 [Unit]
 Description=Renew caption cert
 [Service]
 Type=oneshot
-User=nategu
+User=__USER__
 ExecStart=__HOME__/.local/bin/certbot renew --config-dir __HOME__/voice-svc/le --work-dir __HOME__/voice-svc/le-work --logs-dir __HOME__/voice-svc/le-logs --quiet
 ExecStartPost=/usr/bin/pkill -f web_caption.py

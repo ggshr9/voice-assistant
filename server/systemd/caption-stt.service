@@ -3,19 +3,18 @@
 # 所以这里不用 systemd 的 specifier，用显式占位更不容易出错。
 # 渲染：见 docs/DEPLOY.md「systemd」一节的 sed 命令。
 [Unit]
-Description=Realtime Caption Web
+Description=Realtime Caption STT (faster-whisper on CUDA)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=__USER__
-WorkingDirectory=__HOME__/voice-svc/web
-Environment=PORT=443
-ExecStart=__HOME__/voice-svc/web/run_web.sh
+WorkingDirectory=__HOME__/voice-svc
+EnvironmentFile=-__HOME__/voice-svc/hf.env
+ExecStart=__HOME__/voice-svc/run_stt.sh
 Restart=always
-RestartSec=3
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

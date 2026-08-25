@@ -144,17 +144,21 @@ recall "刚才说了什么"
 ```bash
 cd ~/voice-svc
 
-uv venv .venv --python 3.12                 # 实时字幕：faster-whisper 走 ctranslate2
+uv venv .venv --python 3.12                 # 实时字幕 + STT 服务
 uv pip install --python .venv/bin/python \
-    faster-whisper aiohttp webrtcvad numpy
+    faster-whisper aiohttp webrtcvad numpy flask
 
 uv venv .venv-meeting --python 3.12         # 会议批处理：pyannote + torch + qwen-asr
 uv pip install --python .venv-meeting/bin/python \
     pyannote.audio torch torchaudio torchcodec qwen-asr scipy
 ```
 
-> ⚠️ `meeting_pipeline.py` 里写死了这两个路径。用 `.venv` 跑分人会 `ModuleNotFoundError: torch`——
-> torch 只在 `.venv-meeting` 里。
+> ⚠️ 两处容易踩：
+> - `meeting_pipeline.py` 里**写死了这两个路径**。用 `.venv` 跑分人会 `ModuleNotFoundError: torch`——torch 只在 `.venv-meeting` 里。
+> - `flask` 是 `stt_server_cuda.py` 要的，漏了 STT 服务起不来。
+
+**代码放哪也是写死的**：全套代码必须在 `~/voice-svc/`（`web/config.py`、`web/jobs.py`、
+`asr_diarize_step.py`、`minutes_lib.py` 里都是这个路径）。换目录要一起改。
 
 ### 配置
 
@@ -188,16 +192,35 @@ cp ~/voice-svc/le/live/caption.你的域名/{fullchain,privkey}.pem ~/voice-svc/
 
 ### systemd
 
+unit 里的 `__USER__` / `__HOME__` **是占位符，必须先渲染**：
+
 ```bash
-cp server/systemd/*.{service,timer} /etc/systemd/system/
+for f in server/systemd/*.service server/systemd/*.timer; do
+  sed -e "s|__USER__|$USER|g" -e "s|__HOME__|$HOME|g" "$f" \
+    | sudo tee /etc/systemd/system/"$(basename "$f")" > /dev/null
+done
 sudo systemctl daemon-reload
-sudo systemctl enable --now caption-web.service caption-renew.timer
+sudo systemctl enable --now caption-web.service caption-stt.service caption-renew.timer
 ```
 
-- `caption-web.service` — 网页版，`Restart=always`，用 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 以普通用户绑 443
-- `caption-renew.timer` — 每天续证，续完 `pkill web_caption.py` 让 `Restart=always` 拉起新证书
+> 为什么不用 systemd 自己的 `%h` / `%i`：系统级 unit 里 `%h` 解析成 `/root`（不是
+> `User=` 的家目录），`%i` 只在模板单元（`name@.service`）里有效。用显式占位更不容易错。
 
-STT 服务（`stt_server_cuda.py`）由 `run_stt.sh` 启动，默认绑内网/Tailscale 地址，用 `STT_HOST` / `STT_PORT` 覆盖。
+| unit | 作用 |
+|---|---|
+| `caption-web.service` | 网页版。`Restart=always`；靠 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 以普通用户绑 443 |
+| `caption-stt.service` | STT 服务（faster-whisper on CUDA）。默认绑 `127.0.0.1`，要给别的机器用就设 `STT_HOST` |
+| `caption-renew.timer` | 每天续证；续完 `pkill web_caption.py`，靠 `Restart=always` 拉起新证书 |
+
+### 证书路径
+
+`web_caption.py` 从 `CAPTION_CERT` / `CAPTION_KEY` 读，默认值指向 `caption.example.com`
+这个**占位域名**。用自己的域名就在 `secrets.env` 里加：
+
+```bash
+export CAPTION_CERT=$HOME/voice-svc/le/live/caption.你的域名/fullchain.pem
+export CAPTION_KEY=$HOME/voice-svc/le/live/caption.你的域名/privkey.pem
+```
 
 ### 从本机同步代码
 

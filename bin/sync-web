@@ -76,11 +76,14 @@ roots = [pathlib.Path(a) for a in sys.argv[1:] if pathlib.Path(a).exists()]
 pat = re.compile(r'os\.environ\.get\((\s*"CAPTION_LLM_URL"\s*),\s*"http://[\d.]+:\d+[^"]*"\)')
 # 绑定地址同理:服务器上写的是真实内网/Tailscale 地址,仓库里不该有
 host = re.compile(r'os\.environ\.get\((\s*"STT_HOST"\s*),\s*"(?!127\.0\.0\.1|0\.0\.0\.0)[^"]*"\)')
+# 证书路径里写死的域名同理:那是部署细节,仓库里该是占位
+dom = re.compile(r'le/live/[A-Za-z0-9.-]+/')
 for root in roots:
   for f in root.rglob("*.py"):
     s = f.read_text(encoding="utf-8")
     new = pat.sub(r'os.environ.get(\1, "")   # 必须显式配置(线上由 secrets.env 注入)', s)
     new = host.sub(r'os.environ.get(\1, "127.0.0.1")   # 部署时用 STT_HOST 指定', new)
+    new = dom.sub('le/live/caption.example.com/', new)
     if new != s:
         f.write_text(new, encoding="utf-8")
         print(f"   洗净 {f.relative_to(root.parent)}")
