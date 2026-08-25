@@ -7,8 +7,13 @@
 #
 # 同步方向有两个,别搞混:
 #   拉(pull):web/ 与 voice-svc 的服务代码 —— 真源在服务器,在那台机器上迭代
-#   推(push):prompts.py —— 真源在本仓库。纪要 prompt 属于产品决策,该跟仓库走版本;
-#            两边曾各存一份,实测 FINAL_SYS 漂移到只剩 66% 相似
+#   推(push):prompts.py / _voiceprint.py —— 真源在本仓库(代码)
+#            ~/.config/voiceprints.json —— 声纹注册表(数据,不在仓库里)
+#            纪要 prompt 属于产品决策,该跟仓库走版本;两边曾各存一份,实测漂移到只剩 66% 相似
+#
+# ⚠️ 声纹是生物特征。推送等于把它留在公司那台机器上,所以要显式开关:
+#      SYNC_VOICEPRINTS=1 sync-web    才会推;默认不推。
+#      撤回:删本机 ~/.config/voiceprints.json 与服务器 ~/voice-svc/voiceprints.json
 #
 # 排除项是安全边界,不要删:
 #   secrets.env  含 CAPTION_LLM_KEY / CAPTION_ACCESS_PW
@@ -33,8 +38,18 @@ if [ "$1" = "--check" ]; then
   exit 0
 fi
 
-echo "▶ 推 prompts.py 到 ${REMOTE}（纪要 prompt 以仓库为准）…"
+echo "▶ 推共享代码到 ${REMOTE}（prompt 与声纹逻辑以仓库为准）…"
 scp -q "$REPO/prompts.py" "$REMOTE:~/voice-svc/prompts.py"
+scp -q "$REPO/bin/_voiceprint.py" "$REMOTE:~/voice-svc/_voiceprint.py"
+
+VP="$HOME/.config/voiceprints.json"
+if [ "${SYNC_VOICEPRINTS:-0}" = "1" ] && [ -f "$VP" ]; then
+  echo "▶ 推声纹注册表（生物特征，将留存在公司机器上）…"
+  scp -q "$VP" "$REMOTE:~/voice-svc/voiceprints.json"
+  ssh "$REMOTE" 'chmod 600 ~/voice-svc/voiceprints.json'
+elif [ -f "$VP" ]; then
+  echo "  （声纹注册表未推送。要推：SYNC_VOICEPRINTS=1 sync-web）"
+fi
 
 echo "▶ 从 $REMOTE 拉回 web/ …"
 rsync "${RSYNC_ARGS[@]}" -e ssh "$SRC" "$DST"

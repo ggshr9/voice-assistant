@@ -39,13 +39,27 @@ except Exception as e:
     print("instantiate threshold skipped:", e, flush=True)
 
 
+EMBEDDINGS = {}          # 本次分人的 {说话人: 256维向量},供声纹认人用
+
+
 def diarize(signal):
-    """对单声道信号跑 pyannote,返回合并后的轮次 [[st,en,sp],...]。"""
+    """对单声道信号跑 pyannote,返回合并后的轮次 [[st,en,sp],...]。
+
+    顺带把 speaker_embeddings 存进 EMBEDDINGS —— 必须用这一次调用的向量,
+    事后另跑一遍 pyannote 的聚类不保证一致,标签会对不上。
+    """
     try:
         dia = dpipe({"waveform": torch.from_numpy(signal).unsqueeze(0), "sample_rate": sr})
     except Exception:
         return []
     ann = getattr(dia, "speaker_diarization", dia)
+    try:
+        emb = getattr(dia, "speaker_embeddings", None)
+        if emb is not None:
+            for i, lbl in enumerate(ann.labels()):
+                EMBEDDINGS[lbl] = np.asarray(emb)[i]
+    except Exception as e:
+        print("embeddings skipped:", e, flush=True)
     turns = sorted((t.start, t.end, s) for t, _, s in ann.itertracks(yield_label=True))
     merged = []
     for st, en, sp in turns:                     # 同人且间隔<1s 合并一轮
@@ -90,10 +104,28 @@ if ROLES:                                        # 左右声道各自分人,按�
         tasks.append((st, en, Rf, lab))
     print(f"diarized 对方{len(Lspk)}人 / 本地{len(Rspk)}人", flush=True)
 else:                                            # 单声道(线下/上传):纯 pyannote 说话人A/B
-    order = {}
-    for st, en, sp in diarize(wav):
+    turns = diarize(wav)
+    identified = {}
+    try:                                         # 声纹认人:认出来用真名,认不出保留匿名牌
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.realpath(__file__)))))
+        import _voiceprint as _vp
+        people = _vp.load_registry(os.path.expanduser("~/voice-svc/voiceprints.json"))
+        if people and EMBEDDINGS:
+            identified = _vp.match_speakers(EMBEDDINGS, people)
+            if identified:
+                print(f"voiceprint matched: {identified}", flush=True)
+    except Exception as e:
+        print("voiceprint skipped:", e, flush=True)
+
+    order, anon = {}, 0
+    for st, en, sp in turns:
         if sp not in order:
-            order[sp] = f"说话人{_letter(len(order))}"
+            if sp in identified:                 # 真名不占匿名牌字母,免得跳号
+                order[sp] = identified[sp]
+            else:
+                order[sp] = f"说话人{_letter(anon)}"
+                anon += 1
         tasks.append((st, en, wav, order[sp]))
     print(f"diarized {len(order)} speakers", flush=True)
 tasks.sort(key=lambda x: x[0])
