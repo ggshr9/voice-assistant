@@ -21,8 +21,13 @@ stderr 大声告警并退回 CPU 慢速路径 —— 慢但不会让转写挂掉
 用法与 mlx-qwen3-asr 完全一致,参数原样透传:
     <mlx-qwen3-asr 所在 venv 的 python> _asr_mps.py <音频> --diarize ...
 
+同一个钩子还负责**截获声纹向量**:上游从 DiarizeOutput 只取标注、把 256 维的
+speaker_embeddings 扔了。而事后另跑一次 pyannote 拿不到能用的向量 —— 第二次的
+聚类结果不保证与第一次一致,标签对不上就全错。所以必须在这一次调用里截下来。
+
 环境变量:
     MEETING_DIARIZE_DEVICE=cpu    强制掰回 CPU(出问题时的退路)
+    MEETING_EMBED_OUT=<路径>      把本次分人的说话人向量写到这里(.npz)
 """
 import os
 import sys
@@ -66,10 +71,49 @@ def patch_diarization(diar_module, device, torch_module, warn_fn):
             pipeline.to(torch_module.device(device))
         except Exception as exc:
             warn_fn(f"pipeline 搬到 {device} 失败({type(exc).__name__}: {exc})，退回 CPU。")
-        return pipeline
+        return _wrap_capture(pipeline, warn_fn)
 
     diar_module._load_pyannote_pipeline = loader
     return True
+
+
+class _CapturingPipeline:
+    """代理 pyannote pipeline,在它被调用时把 speaker_embeddings 落盘。
+
+    **为什么要代理而不是给实例赋 __call__**:Python 查 dunder 方法是查【类型】不是
+    实例,`pipeline.__call__ = wrapped` 不会改变 `pipeline(...)` 的行为 —— 而且
+    不报错,只是静默没生效(第一版就这么写的,截获一直是空的)。
+    """
+
+    def __init__(self, inner, out_path, warn_fn):
+        self._inner = inner
+        self._out_path = out_path
+        self._warn = warn_fn
+
+    def __call__(self, *args, **kwargs):
+        out = self._inner(*args, **kwargs)
+        try:
+            import numpy as np
+            emb = getattr(out, "speaker_embeddings", None)
+            ann = getattr(out, "speaker_diarization", None)
+            if emb is not None and ann is not None:
+                np.savez(self._out_path,
+                         embeddings=np.asarray(emb),
+                         labels=np.array(list(ann.labels())))
+        except Exception as exc:                      # noqa: BLE001
+            self._warn(f"声纹向量没截到({type(exc).__name__}: {exc})，不影响转写。")
+        return out
+
+    def __getattr__(self, name):                      # 其余属性一律透传
+        return getattr(self._inner, name)
+
+
+def _wrap_capture(pipeline, warn_fn, out_path=None):
+    """设了 MEETING_EMBED_OUT 才包;否则原样返回,零开销。"""
+    out_path = out_path or os.environ.get("MEETING_EMBED_OUT")
+    if not out_path:
+        return pipeline
+    return _CapturingPipeline(pipeline, out_path, warn_fn)
 
 
 def main(argv=None):

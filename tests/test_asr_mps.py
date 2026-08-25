@@ -128,5 +128,58 @@ class TestNeedsPatch(unittest.TestCase):
         self.assertFalse(asr_mps.needs_patch(["a.m4a", "-f", "json"]))
 
 
+
+class TestCaptureWrapping(unittest.TestCase):
+    """截获必须真的拦得住调用。
+
+    第一版给实例赋 `pipeline.__call__ = wrapped`——Python 查 dunder 是查类型不是实例，
+    所以完全没生效，而且不报错。真机验证时才发现 .npz 根本没写出来。
+    """
+
+    class _Out:
+        speaker_embeddings = [[0.1, 0.2], [0.3, 0.4]]
+
+        class speaker_diarization:  # noqa: N801
+            @staticmethod
+            def labels():
+                return ["SPEAKER_00", "SPEAKER_01"]
+
+    class _Inner:
+        def __init__(self):
+            self.called = 0
+            self.device = "mps"
+
+        def __call__(self, *a, **kw):
+            self.called += 1
+            return TestCaptureWrapping._Out()
+
+    def test_没设环境变量时原样返回不包装(self):
+        inner = self._Inner()
+        self.assertIs(asr_mps._wrap_capture(inner, lambda m: None, out_path=None), inner)
+
+    def test_包装后调用能拦住并透传返回值(self):
+        import tempfile, os as _os
+        inner = self._Inner()
+        with tempfile.TemporaryDirectory() as d:
+            out = _os.path.join(d, "e.npz")
+            wrapped = asr_mps._wrap_capture(inner, lambda m: None, out_path=out)
+            self.assertIsNot(wrapped, inner, "必须换成代理对象，不能原样返回")
+            result = wrapped("audio")
+            self.assertEqual(inner.called, 1, "内层 pipeline 没被调到")
+            self.assertIsInstance(result, TestCaptureWrapping._Out)
+
+    def test_其余属性透传给内层(self):
+        inner = self._Inner()
+        wrapped = asr_mps._wrap_capture(inner, lambda m: None, out_path="/tmp/x.npz")
+        self.assertEqual(wrapped.device, "mps")
+
+    def test_落盘失败不影响转写(self):
+        inner = self._Inner()
+        warns = []
+        wrapped = asr_mps._wrap_capture(inner, warns.append, out_path="/不存在的目录/e.npz")
+        result = wrapped("audio")
+        self.assertIsInstance(result, TestCaptureWrapping._Out, "转写结果仍要返回")
+        self.assertEqual(len(warns), 1)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
