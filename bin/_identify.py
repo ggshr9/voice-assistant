@@ -32,6 +32,7 @@ def main(argv):
         if mapping:
             print(",".join(f"{k}={v}" for k, v in sorted(mapping.items())))
             names = "、".join(sorted(mapping.values()))
+            print(f"@@STAGE identified {len(mapping)}", file=sys.stderr)
             print(f"🔊 声纹认出 {len(mapping)} 人：{names}", file=sys.stderr)
     except Exception as exc:                                  # noqa: BLE001
         print(f"（声纹识别跳过：{type(exc).__name__}: {exc}）", file=sys.stderr)

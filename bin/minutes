@@ -149,14 +149,17 @@ def make_minutes(text, me=None):
     final_sys = FINAL_SYS + me_instruction(me)
     chunks = split_chunks(text)
     if len(chunks) == 1:
+        log("@@STAGE minutes_start")
         log("📝 单次生成纪要 …")
         return ask(final_sys, "会议转写如下：\n\n" + text, max_tokens=2600)
     # map-reduce
     log(f"📝 会议较长，分 {len(chunks)} 块逐块记笔记 …")
     notes = []
     for i, c in enumerate(chunks, 1):
+        log(f"@@STAGE chunk {i}/{len(chunks)}")
         log(f"   块 {i}/{len(chunks)} …")
         notes.append(f"【片段{i}】\n" + ask(NOTE_SYS, c, max_tokens=1200))
+    log("@@STAGE minutes_start")
     log("📝 汇总成纪要 …")
     joined = "\n\n".join(notes)
     return ask(final_sys, "以下是按时间顺序的会议要点笔记，请汇总成完整纪要：\n\n" + joined,
@@ -308,6 +311,7 @@ def main():
     header = f"# 会议纪要 · {name}\n\n> 来源转写：`{src}`　|　生成：本地 Qwen3.6（vllm-mlx）\n\n"
     with open(out, "w", encoding="utf-8") as f:
         f.write(header + md + "\n")
+    log("@@STAGE done")
     log("✅ 纪要已生成:")
     print(out)
 

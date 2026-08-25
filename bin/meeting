@@ -99,6 +99,7 @@ if ! "${ASR[@]}" "$FILE" "${ARGS[@]}"; then
 fi
 
 echo ""
+echo "@@STAGE transcribed" >&2
 echo "✅ 转写完成，结果在: $OUT/"
 ls "$OUT" 2>/dev/null
 

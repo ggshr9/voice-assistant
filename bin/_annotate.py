@@ -122,6 +122,7 @@ def main(argv):
     if path:
         n = len(speaker_names(build_turns(json.load(open(json_path, encoding="utf-8"))
                                           .get("segments") or [])))
+        print(f"@@STAGE diarized {n}", file=sys.stderr)
         print(f"🗣  已按说话人合成: {os.path.basename(path)}（{n} 人）")
     else:
         print("🗣  仅检出 1 个说话人，纪要用带标点原文")

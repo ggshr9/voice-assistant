@@ -19,20 +19,36 @@ import datetime
 import rumps
 
 
+# CLI 发出的进度标记 → 菜单栏显示什么。
+# 从前这里是拿正则去匹配 CLI 的【中文措辞】(「已按说话人」「转写完成」「块 N/M」)，
+# CLI 一改措辞进度条就静默哑掉。现在改成解析 `@@STAGE <key> [detail]` 这种
+# 机器可读的标记，措辞可以随便改。tests/test_stage_contract.py 会检查
+# 「这里认识的 key」与「bin/ 里真的发出来的 key」两边一致。
+_STAGE_LABELS = {
+    "transcribed": lambda d: "🗣 整理中",
+    "diarized":    lambda d: f"🗣 分人完成（{d} 人）" if d else "🗣 分人完成",
+    "identified":  lambda d: f"🔊 认出 {d} 人",
+    "minutes_start": lambda d: "✍️ 出纪要",
+    "chunk":       lambda d: f"✍️ {d}",
+    "done":        lambda d: "✅ 完成",
+}
+
+
 def _stage_label(line):
-    """从 meeting/minutes 的输出行解析出大致进度标签(显示在菜单栏)。"""
-    m = re.search(r"\((\d+(?:\.\d+)?)%\)", line)        # Qwen3-ASR: "...(8.1%) ETA..."
+    """把一行输出解析成菜单栏进度标签；不是进度行就返回 None。"""
+    line = line.strip()
+    if line.startswith("@@STAGE "):
+        parts = line[len("@@STAGE "):].split(None, 1)
+        key = parts[0] if parts else ""
+        detail = parts[1].strip() if len(parts) > 1 else ""
+        fn = _STAGE_LABELS.get(key)
+        return fn(detail) if fn else None
+
+    # ASR 的百分比来自上游 mlx-qwen3-asr("...(8.1%) ETA...")，那是它的格式、
+    # 我们控制不了，只能按原样匹配。上游改格式的话这里会哑，但不影响其余阶段。
+    m = re.search(r"\((\d+(?:\.\d+)?)%\)", line)
     if m:
-        return f"📝 {int(float(m.group(1)))}%"          # 转写进度
-    if "已按说话人" in line:
-        return "🗣 分人完成"
-    if "转写完成" in line:
-        return "🗣 整理中"
-    mm = re.search(r"块\s*(\d+)/(\d+)", line)            # minutes 长会议 map-reduce
-    if mm:
-        return f"✍️ {mm.group(1)}/{mm.group(2)}"
-    if "会议纪要" in line or "生成纪要" in line:
-        return "✍️ 出纪要"
+        return f"📝 {int(float(m.group(1)))}%"
     return None
 
 HOME = os.path.expanduser("~")
