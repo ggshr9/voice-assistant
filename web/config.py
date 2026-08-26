@@ -17,3 +17,5 @@ ACCESS_PW = os.environ.get("CAPTION_ACCESS_PW", "")   # 设了就要口令
 # 录音存储:停止后把 wav 转 Opus(~10x 小);保留策略与磁盘告警
 RETENTION_DAYS = int(os.environ.get("CAPTION_RETENTION_DAYS", "0"))      # >0 启用:删超期录音文件(保留文字/纪要)
 SESSIONS_WARN_GB = float(os.environ.get("CAPTION_SESSIONS_WARN_GB", "50"))
+# 单次上传上限。没有上限的话,一个请求就能把盘写满(而且从前连口令都不用对)。
+MAX_UPLOAD_BYTES = int(float(os.environ.get("CAPTION_MAX_UPLOAD_GB", "4")) * (1 << 30))

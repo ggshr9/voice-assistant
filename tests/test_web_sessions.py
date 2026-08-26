@@ -233,5 +233,45 @@ class TestPruneJobs(unittest.TestCase):
             self.assertIn(f"live{i}", self.j.JOBS)
 
 
+class TestUploadAuthOrder(unittest.TestCase):
+    """上传必须先验口令再落盘 —— 这是源码层面的不变量,单测 check_pw 抓不到。
+
+    从前 `session_upload` 把整个文件流式写完才 `check_pw`,实测口令错误的请求
+    照样在磁盘上留下 789KB。任何能连到服务的人都能不带口令写满盘。
+    """
+
+    def setUp(self):
+        self.src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = self.src.index("async def session_upload")
+        self.body = self.src[i:self.src.index("\nasync def", i + 10)]
+
+    def test_写文件之前先判过口令(self):
+        auth = self.body.index("authed")
+        write = self.body.index('open(audio, "wb")')
+        self.assertLess(auth, write, "口令校验必须排在打开文件之前")
+
+    def test_收到音频而未鉴权时直接拒绝(self):
+        seg = self.body[self.body.index('field.name == "audio"'):]
+        gate = seg[:seg.index('open(audio, "wb")')]
+        self.assertIn("not authed", gate, "音频分支开头必须拦一道")
+        self.assertIn("403", gate)
+
+    def test_有大小上限(self):
+        """没有上限的话,一个请求就能把盘写满。"""
+        self.assertIn("MAX_UPLOAD_BYTES", self.body)
+        self.assertIn("413", self.body, "超限应回 413 而不是静默截断")
+
+    def test_超限时清掉半截文件(self):
+        self.assertIn("rmtree", self.body, "超限要把已写的半截目录删掉")
+
+    def test_前端把pw排在audio之前(self):
+        """服务端按到达顺序鉴权,前端顺序反了就永远传不上。"""
+        html = (WEB / "index.html").read_text(encoding="utf-8")
+        i = html.index("'/session/upload'")
+        form = html[max(0, i - 400):i]
+        self.assertLess(form.index("append('pw'"), form.index("append('audio'"),
+                        "前端必须先 append('pw') 再 append('audio')")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

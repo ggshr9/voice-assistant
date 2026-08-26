@@ -3,13 +3,13 @@
 落盘:每场会议是一个 session,录音(recording.pcm/.wav)与实时转写(live.jsonl)边走边存。
 生成:停止后拿 recording.wav 跑 meeting_pipeline.py 出 会议纪要/会议记录。
 模块:config(配置) / stt(转写翻译) / sessions(会议存储) / jobs(纪要任务) / 本文件(路由)。"""
-import asyncio, json, os, ssl, time, uuid, glob
+import asyncio, json, os, shutil, ssl, time, uuid, glob
 import numpy as np
 import webrtcvad
 from aiohttp import web
 
 from config import (HERE, SESSIONS, SR, FRAME, SILENCE_TAIL, MIN_SPEECH,
-                    RETENTION_DAYS, SESSIONS_WARN_GB)
+                    RETENTION_DAYS, SESSIONS_WARN_GB, MAX_UPLOAD_BYTES)
 from stt import STT_LOCK, transcribe_pcm, is_noise, translate, translate_stream
 from sessions import (check_pw, new_session, sess_dir, read_meta, write_meta,
                       finalize_wav, wav_seconds, recording_path, dir_size_bytes, prune_old_audio)
@@ -325,25 +325,41 @@ async def job_status(request):
 async def session_upload(request):
     reader = await request.multipart()
     fields, audio, d = {}, None, None
+    # 口令先于音频校验:从前是整个文件写完盘才判口令,任何人不带口令也能往磁盘里灌。
+    # 前端已改成先 append('pw'),再 append('audio');curl 也可以走 ?pw= 。
+    authed = check_pw(request.query.get("pw", "")) if request.query.get("pw") else False
     while True:
         field = await reader.next()
         if field is None:
             break
         if field.name == "audio":
-            # 先建 session 目录再落盘
+            if not authed:
+                return web.json_response(
+                    {"error": "口令错误（口令字段须排在音频之前，或用 ?pw= 传）"}, status=403)
             d = os.path.join(SESSIONS, time.strftime("%Y%m%d_%H%M") + "_上传_" + uuid.uuid4().hex[:4])
             os.makedirs(d, exist_ok=True)
             ext = os.path.splitext(field.filename or "rec")[1].lower() or ".bin"
             audio = os.path.join(d, "recording" + ext)   # 存成 recording.<ext>,事后可下载
-            with open(audio, "wb") as f:
-                while True:
-                    chunk = await field.read_chunk()
-                    if not chunk:
-                        break
-                    f.write(chunk)
+            size = 0
+            try:
+                with open(audio, "wb") as f:
+                    while True:
+                        chunk = await field.read_chunk()
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > MAX_UPLOAD_BYTES:      # 免得一个请求把盘写满
+                            raise ValueError("文件过大")
+                        f.write(chunk)
+            except ValueError:
+                shutil.rmtree(d, ignore_errors=True)
+                return web.json_response(
+                    {"error": f"文件超过 {MAX_UPLOAD_BYTES // (1 << 30)}GB 上限"}, status=413)
         else:
             fields[field.name] = (await field.read()).decode("utf-8", "ignore")
-    if not check_pw(fields.get("pw", "")):
+            if field.name == "pw":
+                authed = authed or check_pw(fields["pw"])
+    if not authed:
         return web.json_response({"error": "口令错误"}, status=403)
     if not audio:
         return web.json_response({"error": "没收到音频"}, status=400)

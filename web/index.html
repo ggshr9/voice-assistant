@@ -390,7 +390,7 @@ $('libSearch').oninput=renderLib;
 $('uploadLink').onclick=e=>{ e.preventDefault(); $('upfile').click(); };
 $('upfile').onchange=async()=>{
   const f=$('upfile').files[0]; if(!f)return;
-  const fd=new FormData(); fd.append('audio',f); fd.append('pw',pw);
+  const fd=new FormData(); fd.append('pw',pw); fd.append('audio',f);  /* pw 必须排在 audio 前:服务端校验通过才落盘 */
   fd.append('title',($('title').value.trim()||f.name)); fd.append('language',$('lang').value);
   const d=await(await fetch('/session/upload',{method:'POST',body:fd})).json();
   if(d.error){ alert(d.error); return; }

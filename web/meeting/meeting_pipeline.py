@@ -25,6 +25,20 @@ def _ld():
 _LANG = {"zh": "Chinese", "en": "English", "auto": "auto"}
 
 
+def to_wav_cmd(audio, wav, roles):
+    """转 16k wav 的 ffmpeg 命令。roles=="1"(线上双声道)保留声道,否则下混单声道。
+
+    **为什么单独抽出来**:原先是 `ff[5:5] = ["-ac","1"]` 按下标往里插,插的位置
+    正好落在 `-ar` 和 `16000` 中间,生成 `-ar -ac 1 16000` —— ffmpeg 退出 234。
+    因为只在非「线上」场景触发,线上会议一路正常,这个 bug 活了两个月才被发现,
+    期间**每一次上传都必然失败**。改成显式拼接,并让它可被测试直接断言。
+    """
+    cmd = ["ffmpeg", "-y", "-i", audio, "-ar", "16000"]
+    if roles != "1":
+        cmd += ["-ac", "1"]
+    return cmd + [wav]
+
+
 def run(audio, outdir, me=None, lang="zh", log=print):
     os.makedirs(outdir, exist_ok=True)
     # 线上会议(双声道 L=对方/R=我)走声道分人;其余下混走 pyannote
@@ -36,10 +50,9 @@ def run(audio, outdir, me=None, lang="zh", log=print):
     roles = "1" if scene == "线上" else "0"
     wav = os.path.join(outdir, "audio.wav")
     log("准备：转 16k wav")
-    ff = ["ffmpeg", "-y", "-i", audio, "-ar", "16000", wav]
-    if roles != "1":                       # 非线上:下混单声道
-        ff[5:5] = ["-ac", "1"]
-    subprocess.run(ff, check=True, capture_output=True)
+    r = subprocess.run(to_wav_cmd(audio, wav, roles), capture_output=True)
+    if r.returncode != 0:                  # 带上 ffmpeg 自己的话,否则只剩一句"处理未产出结果"
+        raise RuntimeError("转 wav 失败：" + r.stderr.decode("utf-8", "ignore")[-400:])
     if roles == "1" and not me:            # 线上:转写里"我"就是本人
         me = "我"
 

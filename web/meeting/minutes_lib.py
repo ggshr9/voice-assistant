@@ -11,29 +11,57 @@ from collections import Counter
 
 LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
+# 可以写成逗号分隔的多个,前面的挂了自动退到后面。
+# **为什么需要**:网关上的模型会被下线 —— 实测配置里的 Qwen3.6 已在 /models 列表里
+# 却返回 404("Received Model Group=Qwen3.6"),整个纪要功能因此静默失效,
+# 而错误只被报成一句"网关无返回",查不出是模型没了。
 LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 
 
-def ask(system, user, max_tokens=2600, temperature=0.3):
+def model_chain(spec=None):
+    """把 CAPTION_LLM_MODEL 解析成候选列表,去重且保序。"""
+    raw = LLM_MODEL if spec is None else spec
+    out = []
+    for m in (raw or "").split(","):
+        m = m.strip()
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def _call(model, system, user, max_tokens, temperature):
     body = json.dumps({
-        "model": LLM_MODEL, "max_tokens": max_tokens, "temperature": temperature,
+        "model": model, "max_tokens": max_tokens, "temperature": temperature,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }).encode()
     h = {"Content-Type": "application/json"}
     if LLM_KEY:
         h["Authorization"] = f"Bearer {LLM_KEY}"
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(LLM_URL, data=body, headers=h)
-            with urllib.request.urlopen(req, timeout=600) as r:
-                out = json.load(r)
-            c = (out["choices"][0]["message"].get("content") or "")
-            c = re.sub(r"<think>.*?</think>", "", c, flags=re.S).strip()
-            if c:
-                return c
-        except Exception as e:
+    req = urllib.request.Request(LLM_URL, data=body, headers=h)
+    with urllib.request.urlopen(req, timeout=600) as r:
+        out = json.load(r)
+    if "choices" not in out:                     # 网关的错误体也是 200,得自己看
+        raise RuntimeError(json.dumps(out.get("error", out), ensure_ascii=False)[:300])
+    c = (out["choices"][0]["message"].get("content") or "")
+    return re.sub(r"<think>.*?</think>", "", c, flags=re.S).strip()
+
+
+def ask(system, user, max_tokens=2600, temperature=0.3):
+    """按候选模型依次尝试,每个重试 3 次。全挂时把每个模型的真实死因都带出来。"""
+    errs = []
+    for model in model_chain() or [LLM_MODEL]:
+        for attempt in range(3):
+            try:
+                c = _call(model, system, user, max_tokens, temperature)
+                if c:
+                    return c
+                errs.append(f"{model}: 返回空内容")
+            except Exception as e:               # noqa: BLE001
+                errs.append(f"{model}: {type(e).__name__} {str(e)[:160]}")
+                if "404" in str(e) or "not found" in str(e).lower():
+                    break                        # 模型没了,重试没意义,直接换下一个
             time.sleep(2)
-    raise RuntimeError("网关无返回")
+    raise RuntimeError("网关无可用模型 —— " + " | ".join(errs[-4:]))
 
 
 # ---------- 合并转写+分人 ----------

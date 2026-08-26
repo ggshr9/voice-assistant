@@ -69,6 +69,40 @@ grep -q -- "-ar 16000" "$ARGLOG" && grep -q -- "-ac 1" "$ARGLOG" \
   && ok "采样率/声道未被改动(16k 单声道)" \
   || bad "音频参数被改动" "$(cat "$ARGLOG")"
 
+# ---- 静音检测必须先下混单声道 ----
+# 「会议录制」聚合设备给的是 2.1,实测第 3 路(LFE)常年 RMS -39dB。silencedetect
+# 要求【所有声道】都低于阈值,于是自动停从来没触发过(设 8 秒、跑满 7 分钟不停)。
+# 命令行上的 `-ac 1` 是【输出】选项,在滤镜链之后才生效,救不了这个。
+run_rec 60 online
+if grep -qE "aformat=channel_layouts=mono,silencedetect" "$ARGLOG"; then
+  ok "silencedetect 之前先 aformat 成单声道"
+else
+  bad "滤镜链里缺少下混,多声道设备上静音自动停会永不触发" "$(cat "$ARGLOG")"
+fi
+# 顺序不能反:先 silencedetect 再 aformat 等于没修
+if grep -qE "silencedetect[^\"]*,aformat" "$ARGLOG"; then
+  bad "aformat 排在 silencedetect 之后,等于没修" "$(cat "$ARGLOG")"
+else
+  ok "滤镜顺序正确(aformat 在前)"
+fi
+
+# ---- 停止时不能连同转写器一起杀 ----
+# 转写器一死就没人读 FIFO,ffmpeg 立刻阻塞在写管道上,处理不了信号,
+# moov 永远写不出来 —— 整个 m4a 报废(真实踩过:786KB 音频在、索引没有、救不回来)。
+if grep -qE "trap '[^']*LIVEPID" "$REPO/bin/rec"; then
+  bad "trap 里同时杀了 LIVEPID,会让 ffmpeg 阻塞在 FIFO 上封不上文件" \
+      "$(grep -n "trap '" "$REPO/bin/rec")"
+else
+  ok "trap 只转发信号给 ffmpeg,不提前杀转写器"
+fi
+
+# ---- 落地校验:读不出的文件不能打绿勾 ----
+if grep -q "录音文件读不出来" "$REPO/bin/rec"; then
+  ok "结束后校验产物,损坏时明确报错"
+else
+  bad "结束后没有校验,损坏文件也会显示「已保存」" ""
+fi
+
 rm -rf "$STUB"
 echo
 echo "通过 $PASS,失败 $FAIL"

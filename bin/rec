@@ -63,6 +63,10 @@ else
   echo "   说话/开会，结束按 Ctrl+C 停止...（持续静音 ${SILENCE_SEC}s 也会自动停）"
   LOG="$(mktemp -t rec-silence)"
   # silencedetect 只做检测、原样透传音频；d= 即「连续静音多久才算一次」
+  # 滤镜链里必须先 aformat 成单声道:「会议录制」聚合设备给的是 2.1,实测第 3 路
+  # (LFE)常年 RMS -39dB,而 silencedetect 要求【所有声道】都低于阈值才算静音 ——
+  # 于是自动停从来没触发过(实测设 8 秒、跑满 7 分钟不停)。命令行上的 `-ac 1` 是
+  # 【输出】选项,在滤镜之后才生效,救不了这个。
   # 用 FIFO 而不是管道:`a | b &` 时 $! / jobs -p 拿到的是【管道最后一个进程】,
   # 也就是转写器 —— 静音自停会杀错对象,ffmpeg 继续录,整个挂住(踩过)。
   FIFO="$(mktemp -u -t rec-pcm)"; mkfifo "$FIFO"
@@ -70,12 +74,15 @@ else
   LIVEPID=$!
   # 一路存 m4a、一路把 PCM 送进 FIFO。silencedetect 只做检测、原样透传。
   "$FFMPEG" -f avfoundation -i ":$DEV" -ac 1 -ar 16000 \
-         -af "silencedetect=noise=${SILENCE_DB}dB:d=${SILENCE_SEC}" \
+         -af "aformat=channel_layouts=mono,silencedetect=noise=${SILENCE_DB}dB:d=${SILENCE_SEC}" \
          -c:a aac "$OUT" \
          -f s16le -ac 1 -ar 16000 pipe:1 > "$FIFO" 2> "$LOG" &
   FFPID=$!
-  # Ctrl+C 要转发给 ffmpeg，让它正常收尾写完 moov（否则 m4a 损坏）
-  trap 'kill -INT "$FFPID" 2>/dev/null; kill "$LIVEPID" 2>/dev/null' INT TERM
+  # Ctrl+C 只转发给 ffmpeg,【不能】同时杀转写器 —— 转写器一死就没人读 FIFO,
+  # ffmpeg 立刻阻塞在写管道上,处理不了信号,moov 永远写不出来,整个 m4a 报废。
+  # 实测踩过两次(会议_20260825_2312.m4a:786KB 音频在、moov 没有、ffmpeg -c copy
+  # 也救不回来)。正确顺序:先让 ffmpeg 收尾退出,再收拾转写器。
+  trap 'kill -INT "$FFPID" 2>/dev/null' INT TERM
   while kill -0 "$FFPID" 2>/dev/null; do
     if grep -q "silence_start" "$LOG" 2>/dev/null; then
       echo ""
@@ -93,6 +100,15 @@ else
 fi
 
 echo ""
+# 落地校验:ffmpeg 被强杀 / 磁盘满 / 设备掉线,都会留下读不出的 m4a。
+# 从前这里无条件打绿勾,用户要到转写时才发现录了个寂寞 —— 那时已经不可挽回。
+DUR="$("$FFMPEG" -v error -i "$OUT" -f null - 2>&1 >/dev/null | head -1)"
+if [ -n "$DUR" ] || [ ! -s "$OUT" ]; then
+  echo "❌ 录音文件读不出来：$OUT"
+  echo "   ${DUR:-文件为空}"
+  echo "   （音频数据可能还在文件里但索引没写上，别删，先备份）"
+  exit 1
+fi
 echo "✅ 录音已保存：$OUT"
 if [ "$AUTO" = "转写" ] || [ "$AUTO" = "transcribe" ]; then
   echo "▶ 自动转写中..."
