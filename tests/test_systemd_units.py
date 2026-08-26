@@ -111,7 +111,7 @@ class TestLaunchAgents(unittest.TestCase):
     def test_渲染后是合法plist(self):
         import plistlib
         for p in self.PLISTS:
-            rendered = p.read_text(encoding="utf-8").replace("__HOME__", "__HOME__")
+            rendered = p.read_text(encoding="utf-8").replace("__HOME__", "/tmp/fakehome")
             self.assertNotIn("__HOME__", rendered)
             try:
                 plistlib.loads(rendered.encode("utf-8"))
