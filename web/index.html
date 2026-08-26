@@ -204,6 +204,15 @@
   .md b{font-weight:600;color:var(--fg)}
 
   /* gate */
+  .microw{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .mic-lb{font-size:13px;opacity:.7;white-space:nowrap}
+  .microw #micSel{max-width:280px;flex:1 1 180px}
+  .mic-meter{width:96px}
+  .mic-hint{font-size:12px;opacity:.75}
+  .mic-hint.ok{color:var(--ok);opacity:1}
+  .mic-hint.bad{color:var(--rec);opacity:1;font-weight:600}
+  .mic-name{margin-left:10px;font-size:12px;opacity:.62}
+  .mic-name.bad{color:var(--rec);opacity:1;font-weight:600}
   #gate{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
         align-items:center;justify-content:center;gap:14px;z-index:50;
         background-image:radial-gradient(700px 320px at 50% 30%,rgba(255,255,255,.04),transparent)}
@@ -252,6 +261,15 @@
           <select id="lang" class="input"><option value="auto">语言 · 自动</option><option value="zh">中文</option><option value="en">英文</option></select>
           <button class="btn" id="startBtn">▶ 开始</button>
         </div>
+        <!-- 试音:开录【之前】就确认这个设备真的有声音。
+             一场会两小时,录完才发现没声音是不可恢复的 —— 事后警告救不回来。 -->
+        <div class="microw">
+          <span class="mic-lb">🎙 麦克风</span>
+          <select id="micSel" class="input"><option value="">系统默认</option></select>
+          <button class="btn ghost sm" id="micTest">试音</button>
+          <span class="meter mic-meter"><span class="meter-fill" id="testFill"></span></span>
+          <span id="micHint" class="mic-hint"></span>
+        </div>
         <div class="uploadline">或 <a id="uploadLink">上传已有录音</a> 直接生成纪要
           <input type="file" id="upfile" accept="audio/*,video/*" style="display:none"></div>
       </div>
@@ -268,7 +286,7 @@
       <div class="live-top">
         <div class="rec-ind"><span id="dot"></span><span class="rec-label">REC</span><span id="timer">00:00</span></div>
         <span class="vu" title="输入音量"><span class="vu-ic">🎙</span><span class="meter"><span class="meter-fill" id="meterFill"></span></span></span>
-        <span id="st">未开始</span><span class="sp"></span>
+        <span id="st">未开始</span><span id="micName" class="mic-name" title="正在使用的输入设备"></span><span class="sp"></span>
       </div>
       <div id="guide"></div>
       <div class="bar">
@@ -326,7 +344,7 @@
 
 <script>
 const $=id=>document.getElementById(id);
-let pw="", scene="线上", curSid=null;
+let pw="", scene="线上", curSid=null, micStream=null;
 let ws,audioCtx,proc,nodes=[],streams=[],pipWin,capCh=1;
 let capturing=false,manualStop=false,retry=0,t0=0,timerIv=null;
 let activeSeg=-1,curOrig="",curZh="",activeRow=null,typeTimer=null,shownLen=0,segEnded=false;
@@ -384,6 +402,12 @@ function renderLib(){
   }
 }
 $('refreshBtn').onclick=loadLib;
+$('micSel').onchange=e=>{ try{ e.target.value ? localStorage.setItem(MIC_PREF_KEY,e.target.value)
+                                               : localStorage.removeItem(MIC_PREF_KEY); }catch(err){}
+  const h=$('micHint'); h.className='mic-hint'; h.textContent='换了设备，建议试一下音'; };
+$('micTest').onclick=runMicTest;
+navigator.mediaDevices?.addEventListener?.('devicechange', loadMicList);   // 插拔耳机后刷新
+loadMicList();
 $('libSearch').oninput=renderLib;
 
 /* ---- 上传 ---- */
@@ -476,6 +500,77 @@ function typeTick(){
 }
 
 const MIC_CONSTRAINTS={echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+
+/* ---- 麦克风选择与试音 ----
+   起因:页面从不指定 deviceId,由 Chrome 按站点记忆挑默认设备。实测挑到了
+   虚拟声卡(BlackHole / 聚合设备),于是录了 19 秒、音频确实传到服务器、
+   状态显示「录制中」,唯独全是静音 —— 而一场两小时的会这样废掉是不可恢复的。
+   事后警告救不回来,所以要在【开录之前】就能选、并且当场看见有没有声音。 */
+const MIC_PREF_KEY='cap_mic_id';
+
+function micConstraints(){
+  const id=savedMicId();
+  return id ? Object.assign({deviceId:{exact:id}}, MIC_CONSTRAINTS) : MIC_CONSTRAINTS;
+}
+
+function savedMicId(){
+  try{ return localStorage.getItem(MIC_PREF_KEY)||''; }catch(e){ return ''; }
+}
+
+async function loadMicList(){
+  const sel=$('micSel'); if(!sel) return;
+  let devs=[];
+  try{ devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'); }
+  catch(e){ return; }
+  const want=savedMicId();
+  // 没授权过时 label 是空的 —— 那就先摆一个「授权后可选」的提示,别显示 "设备 1/2/3"
+  const named=devs.some(d=>d.label);
+  sel.innerHTML='<option value="">系统默认</option>'
+    + (named ? devs.map(d=>`<option value="${d.deviceId}">${d.label}</option>`).join('')
+             : '<option value="" disabled>（点「试音」授权后显示设备名）</option>');
+  if(want && named && devs.some(d=>d.deviceId===want)) sel.value=want;
+  else if(want && named) { try{ localStorage.removeItem(MIC_PREF_KEY); }catch(e){} }  // 设备拔了
+}
+
+let testCtx=null, testRaf=null, testStream=null;
+function stopMicTest(){
+  if(testRaf){cancelAnimationFrame(testRaf);testRaf=null;}
+  if(testStream){ testStream.getTracks().forEach(t=>t.stop()); testStream=null; }
+  if(testCtx){ try{testCtx.close()}catch(e){} testCtx=null; }
+  const f=$('testFill'); if(f) f.style.width='0';
+}
+
+async function runMicTest(){
+  stopMicTest();
+  const hint=$('micHint'); hint.className='mic-hint'; hint.textContent='试音中，说句话…';
+  try{
+    testStream=await navigator.mediaDevices.getUserMedia({audio:micConstraints()});
+  }catch(e){
+    hint.className='mic-hint bad';
+    hint.textContent='拿不到这个麦克风：'+(e.name||e.message);
+    return;
+  }
+  await loadMicList();                       // 授权之后才有设备名,重新填一次
+  const label=(testStream.getAudioTracks()[0]||{}).label||'未知设备';
+  testCtx=new AudioContext();
+  const src=testCtx.createMediaStreamSource(testStream);
+  const an=testCtx.createAnalyser(); an.fftSize=512; src.connect(an);
+  const buf=new Float32Array(an.fftSize);
+  let peak=0; const t0=Date.now();
+  const tick=()=>{
+    an.getFloatTimeDomainData(buf);
+    let s=0; for(let i=0;i<buf.length;i++) s+=buf[i]*buf[i];
+    const rms=Math.sqrt(s/buf.length); peak=Math.max(peak,rms);
+    const f=$('testFill'); if(f){ f.style.width=Math.min(100,Math.round(rms*320))+'%';
+      f.style.background=rms>0.002?'var(--ok)':'var(--warn)'; }
+    if(Date.now()-t0 < 5000){ testRaf=requestAnimationFrame(tick); return; }
+    stopMicTest();
+    if(peak>0.008){ hint.className='mic-hint ok'; hint.textContent='✅ 「'+label+'」听到了'; }
+    else if(peak>0.0008){ hint.className='mic-hint'; hint.textContent='⚠️ 「'+label+'」只有很轻的底噪 —— 确认没静音/没选错设备'; }
+    else { hint.className='mic-hint bad'; hint.textContent='❌ 「'+label+'」完全没有声音，换一个'; }
+  };
+  tick();
+}
 async function getSources(){
   if(scene==='线上'){
     const disp=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});
@@ -483,11 +578,11 @@ async function getSources(){
     const at=disp.getAudioTracks();
     if(!at.length){ throw new Error('没拿到标签页声音！重来时记得勾「分享音频 / 分享标签页声音」。'); }
     let micStream=null;
-    try{ micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS}); streams.push(micStream); }
+    try{ micStream=await navigator.mediaDevices.getUserMedia({audio:micConstraints()}); streams.push(micStream); }
     catch(e){ /* 没麦克风也能只录对方 */ }
     return {tabStream:new MediaStream([at[0]]), micStream};
   }
-  const micStream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
+  const micStream=await navigator.mediaDevices.getUserMedia({audio:micConstraints()});
   streams.push(micStream);
   return {tabStream:null, micStream};
 }
@@ -513,16 +608,54 @@ async function makePcmNode(ctx, nch, onPcm){
 
 /* 输入音量条:实时反馈"它在听" */
 let meterRaf=null;
+/* 持续静音多久算「不对劲」。虚拟声卡(BlackHole / 聚合设备)在没有音频路由进去时
+   输出的是**纯零**,而权限、采集、上传全都"正常" —— 界面上一切都对,就是没声音。
+   真人开会中途也会安静，但连续 12 秒零电平几乎只可能是设备选错了。 */
+const SILENT_WARN_SEC = 12;
+let silentSince = 0, micWarned = false;
+
 function startMeter(an){
   const buf=new Float32Array(an.fftSize);
+  silentSince = 0; micWarned = false;
   const tick=()=>{
     an.getFloatTimeDomainData(buf);
     let s=0; for(let i=0;i<buf.length;i++) s+=buf[i]*buf[i];
-    const pct=Math.min(100,Math.round(Math.sqrt(s/buf.length)*320));
+    const rms=Math.sqrt(s/buf.length);
+    const pct=Math.min(100,Math.round(rms*320));
     const f=$('meterFill'); if(f){ f.style.width=pct+'%'; f.style.background=pct>82?'var(--warn)':'var(--ok)'; }
+
+    // 阈值取得很低(≈-72dB):安静房间的底噪也在这之上,真正的零才落到下面
+    const now=Date.now();
+    if(rms > 0.00025){ silentSince = 0; if(micWarned){ micWarned=false; renderMicName(); } }
+    else {
+      if(!silentSince) silentSince = now;
+      else if(!micWarned && now - silentSince > SILENT_WARN_SEC*1000 && capturing){
+        micWarned = true; renderMicName();
+      }
+    }
     meterRaf=requestAnimationFrame(tick);
   };
+  renderMicName();          // 一开表就把设备名摆出来,别等到出问题才显示
   tick();
+}
+
+/* 把「正在用哪个麦克风」摆在状态栏上。
+   这次踩的坑:页面从不指定 deviceId,由 Chrome 按站点记忆挑默认设备,
+   结果挑到了虚拟声卡 —— 录了 19 秒、音频确实传到了服务器(opus 10KB)、
+   状态显示「录制中」,唯独全是静音,而界面完全没提示。 */
+function renderMicName(){
+  const el=$('micName'); if(!el) return;
+  const label = (micStream && micStream.getAudioTracks()[0] && micStream.getAudioTracks()[0].label) || '';
+  if(!label){ el.textContent=''; el.className='mic-name'; return; }
+  if(micWarned){
+    el.className='mic-name bad';
+    el.textContent='⚠️ 「'+label+'」没有声音 — 点地址栏🎙图标换设备';
+    el.title='连续 '+SILENT_WARN_SEC+' 秒零电平。虚拟声卡(BlackHole/聚合设备)在没有音频路由进去时就是这样。';
+  } else {
+    el.className='mic-name';
+    el.textContent='🎙 '+label;
+    el.title='正在使用的输入设备';
+  }
 }
 
 /* 回声闸门:对方(标签页)在说话时把麦克风闸掉,消除外放串音造成的重影。
@@ -541,9 +674,47 @@ function startDuck(tabAnalyser, micGain){
   };
   tick();
 }
+/* 采一小段,返回这段时间里的峰值 rms。只读不改,探完把临时节点收掉。 */
+async function probeLevel(stream, ms){
+  let ctx=null;
+  try{
+    ctx=new AudioContext();
+    const an=ctx.createAnalyser(); an.fftSize=512;
+    ctx.createMediaStreamSource(stream).connect(an);
+    const buf=new Float32Array(an.fftSize);
+    let peak=0; const t0=Date.now();
+    while(Date.now()-t0 < ms){
+      an.getFloatTimeDomainData(buf);
+      let s=0; for(let i=0;i<buf.length;i++) s+=buf[i]*buf[i];
+      peak=Math.max(peak, Math.sqrt(s/buf.length));
+      await new Promise(r=>setTimeout(r,50));
+    }
+    return peak;
+  }catch(e){
+    return 1;                    // 探不了就别挡路 —— 宁可放行,也别把能用的流程堵死
+  }finally{
+    if(ctx){ try{ctx.close()}catch(e){} }
+  }
+}
+
 $('go').onclick=async()=>{
   if(capturing)return;
   let srcs; try{ srcs=await getSources(); }catch(e){ alert(e.message||e); cleanup(); return; }
+
+  // 开录【之前】先探 1.5 秒:选错设备的代价是一整场会,而那是不可恢复的。
+  // 只在「麦克风是唯一音源」时挡 —— 线上会议里麦克风本来就可能全程静音(只录对方)。
+  if(srcs.micStream && !srcs.tabStream){
+    const peak=await probeLevel(srcs.micStream, 1500);
+    if(peak < 0.0008){
+      const label=(srcs.micStream.getAudioTracks()[0]||{}).label||'当前麦克风';
+      if(!confirm('「'+label+'」这 1.5 秒里一点声音都没有。\n\n'
+        + '常见原因：选到了虚拟声卡（BlackHole / 聚合设备），或者麦克风被静音了。\n'
+        + '这样录下去整场都会是空的，而且事后无法恢复。\n\n'
+        + '仍要继续录吗？（取消 → 回去换设备/试音）')){
+        cleanup(); return;
+      }
+    }
+  }
   // 采集成功后才建会话
   try{
     const d=await(await fetch('/session/start',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -574,6 +745,7 @@ $('go').onclick=async()=>{
     const mn=audioCtx.createMediaStreamSource(srcs.micStream); mn.connect(proc); mn.connect(meter); nodes.push(mn);
   }
   proc.connect(mute); mute.connect(audioCtx.destination);
+  micStream = srcs.micStream || null;
   startMeter(meter);
   for(const s of streams) s.getAudioTracks().forEach(t=>t.onended=()=>stopAll());
   showCur('','（等待说话…）'); startTimer();
@@ -645,6 +817,7 @@ function stopTimer(){ clearInterval(timerIv); }
 function stopAudio(){                          // 停采集(麦/标签页/音频图),不动 ws
   if(duckRaf){cancelAnimationFrame(duckRaf);duckRaf=null;}
   if(meterRaf){cancelAnimationFrame(meterRaf);meterRaf=null;} const mf=$('meterFill'); if(mf)mf.style.width='0';
+  micWarned=false; silentSince=0; const mn=$('micName'); if(mn){mn.textContent='';mn.className='mic-name';}
   try{proc&&proc.disconnect()}catch(e){} nodes.forEach(n=>{try{n.disconnect()}catch(e){}}); nodes=[];
   try{audioCtx&&audioCtx.close()}catch(e){} streams.forEach(s=>{try{s.getTracks().forEach(t=>t.stop())}catch(e){}}); streams=[];
 }

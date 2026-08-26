@@ -368,3 +368,161 @@ test.describe('断线重连时不丢音频', () => {
     expect(r.queued, '正常时不该攒队列').toBe(0);
   });
 });
+
+test.describe('麦克风选错时要说话', () => {
+  // 真实踩到的坑：录了 19 秒、音频确实传到服务器（opus 10KB）、状态显示「录制中」，
+  // 唯独全是静音 —— 因为页面从不指定 deviceId，Chrome 按站点记忆挑到了虚拟声卡
+  // （BlackHole / 聚合设备在没有音频路由进去时输出纯零）。界面完全没提示。
+  async function armMeter(page, rms) {
+    await enter(page);
+    return await page.evaluate((rms) => {
+      capturing = true;
+      micStream = { getAudioTracks: () => [{ label: 'BlackHole 2ch' }] };
+      // 造一个恒定 rms 的假 analyser
+      const an = {
+        fftSize: 256,
+        getFloatTimeDomainData: b => { for (let i = 0; i < b.length; i++) b[i] = rms; },
+      };
+      startMeter(an);
+      return true;
+    }, rms);
+  }
+
+  test('正常有声时显示设备名，不报警', async ({ page }) => {
+    await armMeter(page, 0.05);
+    await page.waitForTimeout(600);
+    const el = page.locator('#micName');
+    await expect(el).toContainText('BlackHole 2ch');
+    await expect(el).not.toHaveClass(/bad/);
+  });
+
+  test('持续零电平超过阈值就明确报警', async ({ page }) => {
+    await armMeter(page, 0);
+    // 把静音起点往前拨，免得真等 12 秒
+    await page.evaluate(() => { silentSince = Date.now() - 13000; });
+    await page.waitForTimeout(600);
+    const el = page.locator('#micName');
+    await expect(el).toHaveClass(/bad/);
+    await expect(el).toContainText('没有声音');
+    await expect(el, '要告诉用户去哪儿改').toContainText(/换设备|地址栏/);
+  });
+
+  test('报警里带上是哪个设备', async ({ page }) => {
+    await armMeter(page, 0);
+    await page.evaluate(() => { silentSince = Date.now() - 13000; });
+    await page.waitForTimeout(600);
+    await expect(page.locator('#micName'), '不说是哪个设备，用户不知道该换掉什么')
+      .toContainText('BlackHole 2ch');
+  });
+
+  test('声音恢复后报警自动撤掉', async ({ page }) => {
+    await armMeter(page, 0);
+    await page.evaluate(() => { silentSince = Date.now() - 13000; });
+    await page.waitForTimeout(500);
+    await expect(page.locator('#micName')).toHaveClass(/bad/);
+    await page.evaluate(() => {
+      // 换成有声的 analyser
+      cancelAnimationFrame(meterRaf);
+      startMeter({ fftSize: 256, getFloatTimeDomainData: b => { for (let i = 0; i < b.length; i++) b[i] = 0.05; } });
+    });
+    await page.waitForTimeout(600);
+    await expect(page.locator('#micName')).not.toHaveClass(/bad/);
+  });
+
+  test('安静房间的底噪不算静音', async ({ page }) => {
+    // -60dB 左右：真人不说话时的环境底噪，不该被当成设备故障
+    await armMeter(page, 0.001);
+    await page.evaluate(() => { silentSince = Date.now() - 13000; });
+    await page.waitForTimeout(600);
+    await expect(page.locator('#micName'), '把正常的安静误报成故障，警告就没人信了')
+      .not.toHaveClass(/bad/);
+  });
+});
+
+test.describe('麦克风选择与开录前试音', () => {
+  // 一场两小时的会录成空的是不可恢复的。事后警告救不回来，
+  // 所以要在【开录之前】就能选设备、能试音，并且开录时自动挡一道。
+
+  test('设备下拉存在且默认是「系统默认」', async ({ page }) => {
+    await enter(page);
+    await expect(page.locator('#micSel')).toBeVisible();
+    await expect(page.locator('#micSel')).toHaveValue('');
+  });
+
+  test('选择被记住（换页面也还在）', async ({ page }) => {
+    await enter(page);
+    await page.evaluate(() => {
+      const sel = document.getElementById('micSel');
+      sel.innerHTML = '<option value="">系统默认</option><option value="dev-abc">某麦克风</option>';
+      sel.value = 'dev-abc';
+      sel.dispatchEvent(new Event('change'));
+    });
+    expect(await page.evaluate(() => localStorage.getItem('cap_mic_id'))).toBe('dev-abc');
+    await page.reload();
+    expect(await page.evaluate(() => savedMicId()), '刷新后选择丢了').toBe('dev-abc');
+  });
+
+  test('选了设备就必须把 deviceId 传下去', async ({ page }) => {
+    await enter(page);
+    const c = await page.evaluate(() => {
+      localStorage.setItem('cap_mic_id', 'dev-xyz');
+      return JSON.stringify(micConstraints());
+    });
+    expect(c, 'deviceId 没传下去，选了等于没选').toContain('dev-xyz');
+    expect(c, '必须 exact，否则浏览器会"尽量满足"然后悄悄换一个').toContain('exact');
+  });
+
+  test('没选时不带 deviceId（用系统默认）', async ({ page }) => {
+    await enter(page);
+    const c = await page.evaluate(() => {
+      localStorage.removeItem('cap_mic_id');
+      return JSON.stringify(micConstraints());
+    });
+    expect(c).not.toContain('deviceId');
+    expect(c, '别把降噪等基础约束弄丢').toContain('echoCancellation');
+  });
+
+  test('设备被拔掉后清掉失效的记忆', async ({ page }) => {
+    await enter(page);
+    const left = await page.evaluate(async () => {
+      localStorage.setItem('cap_mic_id', 'dev-已拔掉');
+      navigator.mediaDevices.enumerateDevices = async () =>
+        [{ kind: 'audioinput', deviceId: 'dev-still-here', label: '还在的麦克风' }];
+      await loadMicList();
+      return localStorage.getItem('cap_mic_id');
+    });
+    expect(left, '记着一个不存在的设备，下次 exact 约束会直接失败').toBeNull();
+  });
+
+  test('probeLevel 听到声音时返回非零峰值', async ({ page }) => {
+    await enter(page);
+    const peak = await page.evaluate(async () => {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator(); osc.frequency.value = 440;
+      const dst = ctx.createMediaStreamDestination();
+      osc.connect(dst); osc.start();
+      const p = await probeLevel(dst.stream, 400);
+      osc.stop(); ctx.close();
+      return p;
+    });
+    expect(peak, '有声音却探不到，开录就会误报').toBeGreaterThan(0.0008);
+  });
+
+  test('probeLevel 对静音流返回接近零', async ({ page }) => {
+    await enter(page);
+    const peak = await page.evaluate(async () => {
+      const ctx = new AudioContext();
+      const dst = ctx.createMediaStreamDestination();   // 什么都不接 = 纯静音
+      const p = await probeLevel(dst.stream, 400);
+      ctx.close();
+      return p;
+    });
+    expect(peak, '静音没被识别出来，那道防线就是摆设').toBeLessThan(0.0008);
+  });
+
+  test('probeLevel 出错时放行而不是堵死流程', async ({ page }) => {
+    await enter(page);
+    const p = await page.evaluate(async () => await probeLevel(null, 200));
+    expect(p, '探测失败应放行 —— 宁可放行也别把能用的流程堵死').toBeGreaterThan(0.0008);
+  });
+});
