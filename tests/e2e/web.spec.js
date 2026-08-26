@@ -283,3 +283,88 @@ test.describe('接口层安全（绕过前端直接打）', () => {
     }
   });
 });
+
+test.describe('断线重连时不丢音频', () => {
+  // 这几条不需要真麦克风：直接在页面里驱动 sendPcm/flushPcmQueue 的状态机。
+  // 真实的丢失场景是「重连退避最长 5 秒，一次抖动就是 5 秒话没了」，
+  // 而用户只看到「断线重连中」，不会知道内容缺了一块。
+  async function setup(page) {
+    await enter(page);
+    await page.evaluate(() => {
+      // 页面脚本顶层的 let 进的是全局【词法】环境,不是 window 的属性 ——
+      // 写 window.ws 影响不到 sendPcm 真正读的那个绑定(第一版就栽在这里)。
+      window.__sent = [];
+      capCh = 1; capturing = true; manualStop = false; retry = 1;
+      pcmQueue = []; pcmQueuedBytes = 0; pcmDroppedMs = 0;
+      ws = { readyState: 3, send: b => window.__sent.push(b.byteLength) };  // 3 = CLOSED
+    });
+  }
+  const chunk = 'new ArrayBuffer(3200)';   // 0.1 秒 @16k 单声道 s16
+
+  test('断线期间的音频被缓存而不是丢弃', async ({ page }) => {
+    await setup(page);
+    const r = await page.evaluate(([c]) => {
+      for (let i = 0; i < 10; i++) sendPcm(eval(c));
+      return { sent: window.__sent.length, queued: pcmQueue.length, dropped: pcmDroppedMs };
+    }, [chunk]);
+    expect(r.sent, '断线时不该发出去').toBe(0);
+    expect(r.queued, '断线期间的音频被丢弃了').toBe(10);
+    expect(r.dropped, '没超上限却报了丢失').toBe(0);
+  });
+
+  test('重连后缓存的音频全部补发', async ({ page }) => {
+    await setup(page);
+    const r = await page.evaluate(([c]) => {
+      for (let i = 0; i < 10; i++) sendPcm(eval(c));
+      ws.readyState = 1;                        // 连上了
+      flushPcmQueue();
+      return { sent: window.__sent.length, queued: pcmQueue.length };
+    }, [chunk]);
+    expect(r.sent, '补发的块数不对').toBe(10);
+    expect(r.queued).toBe(0);
+  });
+
+  test('补发保持原顺序', async ({ page }) => {
+    await setup(page);
+    const ok = await page.evaluate(() => {
+      window.__sent = [];
+      ws.send = b => window.__sent.push(new Uint8Array(b)[0]);
+      for (let i = 1; i <= 5; i++) { const b = new ArrayBuffer(3200); new Uint8Array(b)[0] = i; sendPcm(b); }
+      ws.readyState = 1; flushPcmQueue();
+      return JSON.stringify(window.__sent);
+    });
+    expect(ok, '补发顺序乱了 —— 音频错序等于内容错乱').toBe('[1,2,3,4,5]');
+  });
+
+  test('超过上限时丢最旧的并明确报出丢了多久', async ({ page }) => {
+    await setup(page);
+    const r = await page.evaluate(([c]) => {
+      // 上限 90s；灌 120s 进去（每块 0.1s）
+      for (let i = 0; i < 1200; i++) sendPcm(eval(c));
+      return { queuedSec: Math.round(pcmQueuedBytes / (16000 * 2)), droppedSec: Math.round(pcmDroppedMs / 1000) };
+    }, [chunk]);
+    expect(r.queuedSec, '缓存没被限制住，会吃爆内存').toBeLessThanOrEqual(90);
+    expect(r.droppedSec, '丢了却没记下来').toBeGreaterThan(0);
+    expect(r.queuedSec + r.droppedSec).toBeGreaterThanOrEqual(119);   // 总量对得上
+  });
+
+  test('丢失时状态栏明确告知，不能静默', async ({ page }) => {
+    await setup(page);
+    const txt = await page.evaluate(([c]) => {
+      for (let i = 0; i < 1200; i++) sendPcm(eval(c));
+      return document.querySelector('#st')?.textContent || '';
+    }, [chunk]);
+    expect(txt, `状态栏没提丢失：${txt}`).toMatch(/丢/);
+  });
+
+  test('连接正常时不经过队列', async ({ page }) => {
+    await setup(page);
+    const r = await page.evaluate(([c]) => {
+      ws.readyState = 1;
+      for (let i = 0; i < 5; i++) sendPcm(eval(c));
+      return { sent: window.__sent.length, queued: pcmQueue.length };
+    }, [chunk]);
+    expect(r.sent).toBe(5);
+    expect(r.queued, '正常时不该攒队列').toBe(0);
+  });
+});

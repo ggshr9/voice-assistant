@@ -558,7 +558,7 @@ $('go').onclick=async()=>{
   const mute=audioCtx.createGain(); mute.gain.value=0;
   const meter=audioCtx.createAnalyser(); meter.fftSize=512;   // 输入音量条
   capCh = (srcs.tabStream && srcs.micStream) ? 2 : 1;        // 线上+麦克风 → 双声道分轨(L=对方,R=我)
-  proc=await makePcmNode(audioCtx, capCh, buf=>{ if(ws&&ws.readyState===1) ws.send(buf); });
+  proc=await makePcmNode(audioCtx, capCh, sendPcm);
   if(srcs.tabStream){                                  // 线上:标签页=对方
     const tn=audioCtx.createMediaStreamSource(srcs.tabStream); tn.connect(meter); nodes.push(tn);
     if(srcs.micStream){                                // 麦克风经回声闸门
@@ -579,13 +579,50 @@ $('go').onclick=async()=>{
   showCur('','（等待说话…）'); startTimer();
 };
 
+/* ---- 断线期间的音频缓冲 ----
+   从前是 `if(ws.readyState===1) ws.send(buf)` —— 断线那几秒的音频【直接丢弃】,
+   转写里不留任何痕迹。重连退避最长 5 秒,一次抖动就是 5 秒话没了,
+   而用户看到的只是「断线重连中」,不会知道内容缺了一块。
+   现在先攒着,连上就补发。上限按秒算(16kHz 单声道 s16 ≈ 32KB/s),
+   真超了才丢最旧的,并明确告诉用户丢了多久 —— 静默丢失是这个项目最要避免的。 */
+const PCM_QUEUE_MAX_SEC = 90;
+let pcmQueue = [], pcmQueuedBytes = 0, pcmDroppedMs = 0;
+
+function pcmBytesPerSec(){ return 16000 * 2 * (capCh || 1); }
+
+function sendPcm(buf){
+  if(ws && ws.readyState===1){ flushPcmQueue(); ws.send(buf); return; }
+  pcmQueue.push(buf); pcmQueuedBytes += buf.byteLength;
+  const cap = pcmBytesPerSec() * PCM_QUEUE_MAX_SEC;
+  while(pcmQueuedBytes > cap && pcmQueue.length){
+    const gone = pcmQueue.shift();
+    pcmQueuedBytes -= gone.byteLength;
+    pcmDroppedMs += Math.round(gone.byteLength / pcmBytesPerSec() * 1000);
+  }
+  if(capturing && !manualStop){
+    const sec = Math.round(pcmQueuedBytes / pcmBytesPerSec());
+    setStatus('warn', '断线重连 #'+retry+'… 已缓存 '+sec+'s 音频'
+      + (pcmDroppedMs ? '（超出上限，已丢 '+Math.round(pcmDroppedMs/1000)+'s）' : ''));
+  }
+}
+
+function flushPcmQueue(){
+  if(!pcmQueue.length) return;
+  const q = pcmQueue; pcmQueue = []; pcmQueuedBytes = 0;
+  for(const b of q){ if(ws && ws.readyState===1) ws.send(b); }
+}
+
 function connectWS(){
   setStatus('warn','连接中…');
   ws=new WebSocket('wss://'+location.host+'/ws?pw='+encodeURIComponent(pw)+'&sid='+encodeURIComponent(curSid)+'&ch='+capCh);
   ws.binaryType='arraybuffer';
   ws.onmessage=e=>{ const d=JSON.parse(e.data);
     if(d.error){ if(d.error.includes('口令')){ manualStop=true; stopAll(); sessionStorage.removeItem('cap_pw'); $('gate').style.display='flex'; $('gerr').textContent='口令错误'; return; } setStatus('err',d.error); return; }
-    if(d.status==='ready'){ setStatus('ok',capturing?'录制中':'已连接');
+    if(d.status==='ready'){
+      flushPcmQueue();                                                // 先把断线期间攒的补发出去
+      setStatus(pcmDroppedMs?'warn':'ok',
+        capturing ? (pcmDroppedMs ? '录制中（断线期间丢了 '+Math.round(pcmDroppedMs/1000)+'s）' : '录制中')
+                  : '已连接');
       finalSeg=0; finalizing=0; activeSeg=-1; activeRow=null;          // 服务端句号从头开始(含断线重连)
       if(typeTimer){clearInterval(typeTimer);typeTimer=null;} return; }
     if(d.seg!==undefined){
