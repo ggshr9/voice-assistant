@@ -105,7 +105,12 @@ def list_meetings(query="", limit=50):
     if q:
         entries = [e for e in entries
                    if q in (e.get("title") or "") or q in (e.get("summary") or "")]
-    return {"count": len(entries), "meetings": [_brief(e) for e in entries[:limit]]}
+    shown = entries[:limit] if limit else []
+    # count 从前给的是【匹配总数】,而 meetings 只有 limit 条 —— limit=0 时
+    # 返回 count:4 / meetings:[] 自相矛盾。现在 count 就是本次返回的条数。
+    return {"count": len(shown), "total": len(entries),
+            "truncated": len(shown) < len(entries),
+            "meetings": [_brief(e) for e in shown]}
 
 
 def get_meeting(meeting_id, part="minutes", max_chars=MAX_SNIPPET):
@@ -240,24 +245,64 @@ TOOLS = [
 ]
 
 
-def _int(v, default):
-    """可选整型参数；缺省或 null 回落默认值（客户端常发 "limit": null）。"""
+# 调这个接口的是 **agent**,不是人。报错必须指名道姓说清「哪个参数、要什么」,
+# 否则模型只能瞎猜。从前缺 id 会原样抛出 KeyError,前端看到的是「错误: \'id\'」;
+# 传个数字当 query 则是「\'int\' object has no attribute \'strip\'」—— 全是泄漏的内部异常。
+MAX_LIMIT = 500
+
+
+def _int(v, default, name="limit", lo=0, hi=MAX_LIMIT):
+    """可选整型参数;缺省或 null 回落默认值(客户端常发 "limit": null)。
+
+    越界一律**夹紧**而不是报错 —— 对 agent 来说,把 limit=99999 直接夹到 500
+    比让整个调用失败有用得多。但类型错了要明确报,那是调用方写错了。
+    """
     if v is None or v == "":
         return default
-    return int(v)
+    if isinstance(v, bool):                       # bool 是 int 的子类,但 limit=true 显然是笔误
+        raise ValueError("%s 需要整数,收到布尔值 %r" % (name, v))
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise ValueError("%s 需要整数,收到 %r（示例：\"%s\": 20）" % (name, v, name))
+    return max(lo, min(hi, n))
+
+
+def _text(args, name, tool):
+    """必填的字符串参数。"""
+    if name not in args:
+        raise ValueError("缺少必填参数 %s。%s 的调用示例：{\"%s\": \"...\"}" % (name, tool, name))
+    v = args[name]
+    if v is None:
+        raise ValueError("%s 不能为 null" % name)
+    if not isinstance(v, str):
+        raise ValueError("%s 需要字符串,收到 %s（%r）" % (name, type(v).__name__, v))
+    if not v.strip():
+        raise ValueError("%s 不能为空" % name)
+    return v
 
 
 def call_tool(name, args):
+    if not isinstance(args, dict):
+        raise ValueError("arguments 必须是对象,收到 %s" % type(args).__name__)
     if name == "list_meetings":
-        return list_meetings(args.get("query", ""), _int(args.get("limit"), 50))
+        q = args.get("query") or ""
+        if not isinstance(q, str):
+            raise ValueError("query 需要字符串,收到 %s" % type(q).__name__)
+        return list_meetings(q, _int(args.get("limit"), 50))
     if name == "get_meeting":
-        return get_meeting(args["id"], args.get("part") or "minutes",
-                           _int(args.get("max_chars"), MAX_SNIPPET))
+        part = args.get("part") or "minutes"
+        return get_meeting(_text(args, "id", "get_meeting"), part,
+                           _int(args.get("max_chars"), MAX_SNIPPET,
+                                "max_chars", lo=1, hi=1_000_000))
     if name == "search_meetings":
-        return search_meetings(args["query"], _int(args.get("limit"), 20))
+        return search_meetings(_text(args, "query", "search_meetings"),
+                               _int(args.get("limit"), 20))
     if name == "ask_meetings":
-        return ask_meetings(args["question"], _int(args.get("top"), 2))
-    raise ValueError("unknown tool: %s" % name)
+        return ask_meetings(_text(args, "question", "ask_meetings"),
+                            _int(args.get("top"), 2, "top", lo=1, hi=20))
+    raise ValueError("没有名为 %s 的工具（可用：list_meetings / get_meeting / "
+                     "search_meetings / ask_meetings）" % name)
 
 
 # ---------- JSON-RPC 2.0 over stdio ----------
@@ -287,6 +332,8 @@ def handle(req):
         return _ok(mid, {"tools": TOOLS})
     if method == "tools/call":
         p = req.get("params") or {}
+        if not isinstance(p, dict):   # params 传成数组时,p.get 会漏出 AttributeError
+            return _err(mid, -32602, "params 必须是对象,收到 %s" % type(p).__name__)
         try:
             result = call_tool(p.get("name"), p.get("arguments") or {})
             text = json.dumps(result, ensure_ascii=False, indent=2)

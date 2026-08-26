@@ -75,7 +75,9 @@ class TestToolErrorsAreInBand(unittest.TestCase):
         r = mcp.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                         "params": {"name": "nope", "arguments": {}}})
         self.assertTrue(r["result"]["isError"])
-        self.assertIn("unknown tool", r["result"]["content"][0]["text"])
+        txt = r["result"]["content"][0]["text"]
+        self.assertIn("nope", txt, "报错要点名是哪个工具")
+        self.assertIn("list_meetings", txt, "并列出可用的,让 agent 能自我纠正")
 
 
 class TestFind(unittest.TestCase):
@@ -120,6 +122,111 @@ class TestIntCoercion(unittest.TestCase):
     def test_正常取值(self):
         self.assertEqual(mcp._int(3, 50), 3)
         self.assertEqual(mcp._int("7", 50), 7)
+
+
+class TestArgValidation(unittest.TestCase):
+    """调这个接口的是 **agent**,不是人 —— 报错必须指名道姓说清哪个参数要什么。
+
+    从前缺 id 会原样抛 KeyError,agent 只看到「错误: 'id'」,无从自我纠正;
+    传数字当 query 则漏出「'int' object has no attribute 'strip'」。
+    """
+
+    def _call(self, name, args):
+        r = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": name, "arguments": args}})
+        return r["result"]["isError"], r["result"]["content"][0]["text"]
+
+    def test_缺必填参数时报错里有参数名(self):
+        for tool, field in (("get_meeting", "id"), ("search_meetings", "query"),
+                            ("ask_meetings", "question")):
+            err, msg = self._call(tool, {})
+            self.assertTrue(err)
+            self.assertIn(field, msg, f"{tool} 的报错没点名 {field}：{msg}")
+
+    def test_报错里不含python内部异常措辞(self):
+        LEAKS = ("object has no attribute", "invalid literal", "Traceback",
+                 "KeyError", "requires string as left operand")
+        cases = [("get_meeting", {}), ("search_meetings", {"query": 123}),
+                 ("get_meeting", {"id": None}), ("list_meetings", {"limit": "abc"})]
+        for tool, args in cases:
+            _, msg = self._call(tool, args)
+            for leak in LEAKS:
+                self.assertNotIn(leak, msg, f"{tool}{args} 漏出内部异常：{msg}")
+
+    def test_类型错了要明确报而不是猜(self):
+        for args in ({"query": 123}, {"query": ["a"]}, {"query": {"a": 1}}):
+            err, msg = self._call("search_meetings", args)
+            self.assertTrue(err, f"{args} 应报错")
+            self.assertIn("字符串", msg)
+
+    def test_bool不能当整数(self):
+        """limit=true 显然是笔误,但 bool 是 int 的子类,不特判就会被当成 1。"""
+        err, msg = self._call("list_meetings", {"limit": True})
+        self.assertTrue(err, "limit=true 应被拒")
+
+    def test_arguments不是对象时明确报错(self):
+        for bad in ([1, 2], "hello", 42):
+            err, msg = self._call("list_meetings", bad)
+            self.assertTrue(err, f"arguments={bad!r} 应报错")
+            self.assertIn("对象", msg)
+
+    def test_未知工具列出可用的(self):
+        err, msg = self._call("no_such_tool", {})
+        self.assertTrue(err)
+        self.assertIn("list_meetings", msg, "应把可用工具列出来")
+
+    def test_params不是对象时回协议级错误(self):
+        r = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": [1]})
+        self.assertEqual(r["error"]["code"], -32602)
+
+
+class TestIntClamp(unittest.TestCase):
+    """越界夹紧而不是报错 —— 对 agent 来说,limit=99999 夹到上限比整个调用失败有用。"""
+
+    def test_超上限被夹紧(self):
+        self.assertEqual(mcp._int(10 ** 9, 50), mcp.MAX_LIMIT)
+
+    def test_负数被夹到下界(self):
+        """从前 entries[:-1] 会静默丢掉最后一场会。"""
+        self.assertEqual(mcp._int(-1, 50), 0)
+
+    def test_max_chars下界是1不是0(self):
+        """max_chars=0 切出空串却报 truncated,等于什么都没返回。"""
+        self.assertEqual(mcp._int(0, 800, "max_chars", lo=1, hi=10 ** 6), 1)
+        self.assertEqual(mcp._int(-5, 800, "max_chars", lo=1, hi=10 ** 6), 1)
+
+    def test_浮点向下取整(self):
+        self.assertEqual(mcp._int(2.9, 50), 2)
+
+
+class TestListMeetingsCount(unittest.TestCase):
+    """count 从前给的是匹配总数,而 meetings 只有 limit 条 —— limit=0 时
+    返回 count:4 / meetings:[] 自相矛盾。"""
+
+    def setUp(self):
+        self._orig = mcp._load_entries
+        mcp._load_entries = lambda: list(ENTRIES)
+
+    def tearDown(self):
+        mcp._load_entries = self._orig
+
+    def test_count等于实际返回条数(self):
+        for limit in (0, 1, 2, 99):
+            r = mcp.list_meetings("", limit)
+            self.assertEqual(r["count"], len(r["meetings"]),
+                             f"limit={limit} 时 count 与实际条数不符")
+
+    def test_total是匹配总数(self):
+        self.assertEqual(mcp.list_meetings("", 1)["total"], 2)
+
+    def test_截断时明确标出(self):
+        self.assertTrue(mcp.list_meetings("", 1)["truncated"])
+        self.assertFalse(mcp.list_meetings("", 99)["truncated"])
+
+    def test_过滤后total反映过滤结果(self):
+        r = mcp.list_meetings("声音克隆", 99)
+        self.assertEqual(r["total"], 1)
+        self.assertEqual(r["count"], 1)
 
 
 if __name__ == "__main__":

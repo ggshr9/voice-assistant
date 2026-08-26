@@ -19,6 +19,7 @@
 数据放 `~/.config/voiceprints.json`，**不进 git** —— 代码要可追溯、生物特征要可删除，
 两者生命周期相反。
 """
+import math
 import json
 import os
 from datetime import datetime
@@ -43,13 +44,28 @@ def is_sure(score):
 
 
 def cosine(a, b):
-    """余弦相似度；任一为零向量时返回 0（而不是 NaN）。"""
+    """余弦相似度。任何算不出真实相似度的情况一律返回 0，**绝不返回 NaN**。
+
+    为什么这条特别重要：NaN 参与比较时结果永远是 False，于是
+    ``nan < threshold`` 和 ``nan - x < margin`` **两道安全闸门会同时失效** ——
+    含 NaN 的向量反而畅通无阻地拿到名字。实测过：注册表里放一条含 NaN 的向量，
+    本该匹配到「李四」的说话人被判成了那个 NaN 条目，相似度显示 nan。
+    对声纹来说这是代价最高的错误：把一个人的话安到另一个人头上。
+
+    零向量、维度不一致、含 NaN/inf —— 全部按「不认识」处理（返回 0）。
+    """
     a = np.asarray(a, dtype=np.float64).reshape(-1)
     b = np.asarray(b, dtype=np.float64).reshape(-1)
+    if a.size == 0 or a.size != b.size:      # 维度对不上说明来源不同,不是"不像",是没法比
+        return 0.0
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na == 0 or nb == 0:
         return 0.0
-    return float(a @ b / (na * nb))
+    r = float(a @ b / (na * nb))
+    # 只在结果上判一次就够:输入里的 NaN/inf 必然经 norm 传导到 r。
+    # 曾经在入口再加一遍 np.isfinite(a).all(),但那是每次比较都全数组扫一遍的
+    # 热路径开销(说话人数 × 注册人数 × 每人向量数),而变异测试证明单靠这行就能拦住。
+    return r if math.isfinite(r) else 0.0
 
 
 def best_score(embedding, person):

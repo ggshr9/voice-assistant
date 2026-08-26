@@ -261,5 +261,77 @@ class TestOverSegmentationRepair(unittest.TestCase):
         self.assertNotEqual(m["S0"][1], m["S1"][1], "两簇的相似度不该被抹成一样")
 
 
+class TestDegenerateVectors(unittest.TestCase):
+    """算不出真实相似度时必须返回 0，**绝不能是 NaN**。
+
+    NaN 参与比较永远得 False，于是 `nan < threshold` 和 `nan - x < margin`
+    两道安全闸门会**同时失效** —— 含 NaN 的条目反而畅通无阻地拿到名字。
+    实测过：注册表里放一条含 NaN 的向量，本该匹配「李四」的说话人被判成了
+    那个 NaN 条目。对声纹来说这是代价最高的错误：把 A 的话安到 B 头上。
+    """
+
+    def _v(self, *a):
+        v = np.array(a, dtype="float32")
+        return v / np.linalg.norm(v)
+
+    def _p(self, name, *vs):
+        return {"name": name, "embeddings": [list(map(float, v)) for v in vs]}
+
+    def test_cosine从不返回nan(self):
+        cases = [
+            ("含 NaN", np.array([np.nan, 1.0]), np.array([1.0, 0.0])),
+            ("含 inf", np.array([np.inf, 1.0]), np.array([1.0, 0.0])),
+            ("含 -inf", np.array([-np.inf, 1.0]), np.array([1.0, 0.0])),
+            ("两边都 NaN", np.array([np.nan]), np.array([np.nan])),
+            ("维度不同", np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0])),
+            ("空向量", np.array([]), np.array([])),
+            ("零向量", np.zeros(4), np.ones(4)),
+        ]
+        for label, a, b in cases:
+            r = vp.cosine(a, b)
+            self.assertEqual(r, r, f"{label} 返回了 NaN")     # NaN != NaN
+            self.assertEqual(r, 0.0, f"{label} 应返回 0，实得 {r}")
+
+    def test_注册表里的nan条目不能抢走匹配(self):
+        """这是那个 bug 的最小复现。"""
+        A = self._v(1, 0, 0, 0)
+        people = [{"name": "坏条目", "embeddings": [[float("nan"), 0, 0, 0]]},
+                  self._p("李四", A),
+                  self._p("王五", self._v(0, 1, 0, 0))]
+        got = vp.match_speakers({"S0": A}, people)
+        self.assertEqual(got.get("S0"), "李四", f"被 NaN 条目抢走了：{got}")
+
+    def test_输入向量含nan时保持匿名(self):
+        bad = np.array([np.nan, 1, 0, 0], dtype="float32")
+        self.assertEqual(vp.match_speakers({"S0": bad}, [self._p("张三", self._v(1, 0, 0, 0))]), {})
+
+    def test_维度不一致不崩且不匹配(self):
+        """向量维度不同说明来源不是同一个模型 —— 是「没法比」,不是「不像」。"""
+        self.assertEqual(
+            vp.match_speakers({"S0": self._v(1, 0, 0)}, [self._p("张三", self._v(1, 0, 0, 0))]), {})
+
+    def test_向量是None不崩(self):
+        self.assertEqual(
+            vp.match_speakers({"S0": None}, [self._p("张三", self._v(1, 0, 0, 0))]), {})
+
+    def test_零向量保持匿名(self):
+        self.assertEqual(
+            vp.match_speakers({"S0": np.zeros(4, dtype="float32")},
+                              [self._p("张三", self._v(1, 0, 0, 0))]), {})
+
+    def test_注册者一条向量都没有时跳过(self):
+        self.assertEqual(
+            vp.match_speakers({"S0": self._v(1, 0, 0, 0)},
+                              [{"name": "空壳", "embeddings": []}]), {})
+
+    def test_坏条目不影响其余人的正常匹配(self):
+        """一条坏数据不该把整个注册表拖下水。"""
+        A, B = self._v(1, 0, 0, 0), self._v(0, 1, 0, 0)
+        people = [{"name": "坏条目", "embeddings": [[float("inf"), 0, 0, 0]]},
+                  self._p("张三", A), self._p("李四", B)]
+        got = vp.match_speakers({"S0": A, "S1": B}, people)
+        self.assertEqual(got, {"S0": "张三", "S1": "李四"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
