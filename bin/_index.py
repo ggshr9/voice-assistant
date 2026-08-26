@@ -15,6 +15,11 @@ json 是唯一真源,md 每次由它渲染。
   _index.py rebuild [会议根目录]               # 扫全部 转写_* 重建
   _index.py list                               # 打印索引表
 """
+import contextlib
+import fcntl
+import shutil
+import tempfile
+import time
 import json
 import os
 import re
@@ -212,21 +217,105 @@ def index_paths(root=ROOT):
     return os.path.join(root, JSON_NAME), os.path.join(root, MD_NAME)
 
 
+@contextlib.contextmanager
+def index_lock(root=ROOT, timeout=30):
+    """给「读—改—写」整段加锁。
+
+    **为什么必须有**:登记走的是 `save(upsert(load(), entry))`。两个 `meeting`
+    同时收尾(转两个文件、或本机与网页同时登记)时,后写的会拿一份过期快照覆盖前者。
+    实测 10 个并发登记 → **索引里一场都不剩**,而且读者撞上写到一半的文件会直接
+    抛 JSONDecodeError,连带 recall / MCP 全线瘫痪。
+    """
+    os.makedirs(root, exist_ok=True)
+    lf = os.path.join(root, ".索引.lock")
+    fd = os.open(lf, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > deadline:
+                    raise TimeoutError(f"等索引锁超过 {timeout}s：{lf}")
+                time.sleep(0.05)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def load(root=ROOT):
+    """读索引。文件损坏时回退到 .bak,再不行才报错 —— 但**绝不静默返回空**。
+
+    静默返回 [] 是最坏的选择:调用方紧接着 save(),就把损坏升级成了永久丢失。
+    """
     jf, _ = index_paths(root)
     if not os.path.exists(jf):
         return []
-    with open(jf, encoding="utf-8") as f:
-        return json.load(f).get("meetings", [])
+    try:
+        with open(jf, encoding="utf-8") as f:
+            return json.load(f).get("meetings", [])
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        bak = jf + ".bak"
+        if os.path.exists(bak):
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    entries = json.load(f).get("meetings", [])
+                print(f"⚠️ {jf} 损坏（{e}），已回退到 {bak}（{len(entries)} 场）",
+                      file=sys.stderr)
+                return entries
+            except Exception:                      # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"索引损坏且无可用备份：{jf}\n  {e}\n"
+            f"  修复：`_index.py rebuild` 会扫 转写_* 目录重建。") from e
+
+
+def _atomic_write(path, text):
+    """先写同目录的 .tmp 再 os.replace —— 中途挂掉不会留下半截文件。
+
+    从前是直接 open(path,"w"),而那一刻文件就被截断了。实测在 json.dump 中途
+    模拟 Ctrl+C:索引从 11778 字节变成 28 字节,全部会议元数据当场蒸发。
+    (同一类错误也让录音的 m4a 报废过 —— 截断在先、内容在后。)
+    """
+    d = os.path.dirname(path) or "."
+    # mkstemp 一律建成 0600 —— 直接 replace 会把原文件权限悄悄改掉。
+    # 保留原权限;新文件用 0644(索引.md 是给人看的渲染稿)。
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())                   # 断电也不留半截
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)                      # 同一文件系统上是原子的
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def save(entries, root=ROOT):
     jf, mf = index_paths(root)
     os.makedirs(root, exist_ok=True)
-    with open(jf, "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "meetings": entries}, f, ensure_ascii=False, indent=2)
-    with open(mf, "w", encoding="utf-8") as f:
-        f.write(render_markdown(entries))
+    payload = json.dumps({"version": 1, "meetings": entries},
+                         ensure_ascii=False, indent=2)
+    if os.path.exists(jf):                         # 留一份上一版,给 load 的回退用
+        try:
+            shutil.copy2(jf, jf + ".bak")
+        except OSError:
+            pass
+    _atomic_write(jf, payload)
+    _atomic_write(mf, render_markdown(entries))
     return jf, mf
 
 
@@ -338,7 +427,8 @@ def main(argv):
                 entry["title"] = t
         elif "--no-llm" not in argv:
             entry = _titled(entry, _brain_ask())
-        jf, mf = save(upsert(load(), entry))
+        with index_lock():
+            jf, mf = save(upsert(load(), entry))
         print(f"🗂  已登记「{entry['title']}」→ {os.path.basename(jf)} / {os.path.basename(mf)}")
         return 0
 
@@ -354,7 +444,8 @@ def main(argv):
             e = scan_dir(os.path.join(root, name))
             if e:
                 entries = upsert(entries, _titled(e, ask))
-        jf, mf = save(entries, root)
+        with index_lock(root):                 # rebuild 是整表覆盖,更不能跟登记撞上
+            jf, mf = save(entries, root)
         print(f"🗂  已重建索引：{len(entries)} 场会 → {jf}")
         return 0
 

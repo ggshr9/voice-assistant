@@ -6,6 +6,12 @@
 
 不碰文件系统、不联网。跑: uv run tests/test_index.py
 """
+import os
+import random
+import tempfile
+import threading
+import time
+import sys
 import importlib.util
 import pathlib
 import unittest
@@ -218,6 +224,186 @@ class TestFrontmatter(unittest.TestCase):
         """说话人数为 0 时不该输出 `speakers: 0`，那会让人以为真的 0 个人说话。"""
         fm = meetindex.render_frontmatter({"id": "x", "title": "t", "speakers": 0, "summary": ""})
         self.assertNotIn("speakers:", fm)
+
+
+class _IndexTmp(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _entry(self, i):
+        return {"id": f"会议_{i:02d}", "title": f"第{i}场", "date": "2026-08-26 01:00",
+                "dir": "/x", "summary": "摘要", "files": {"minutes": "m.md"},
+                "duration_sec": 60, "speakers": 1, "todos": 0, "mine": 0}
+
+
+class TestAtomicSave(_IndexTmp):
+    """索引是唯一真源。从前 save 直接 open(path,"w") —— 那一刻文件就被截断了,
+    写到一半挂掉全部会议元数据当场蒸发(实测 11778 字节 → 28 字节)。
+    """
+
+    def test_写到一半崩溃时原文件分毫不动(self):
+        """失败必须发生在【写入过程中】才测得到原子性。
+
+        第一版这条测试是让 json.dumps 抛异常 —— 但那发生在打开文件之前,
+        原子与非原子实现都不会碰到原文件,于是把「直接 open(w) 覆盖」的变异
+        放了过去。改成在 fsync 处失败:此时数据已经写进某个文件了。
+        """
+        old_entries = [self._entry(i) for i in range(30)]
+        meetindex.save(old_entries, self.root)
+        jf, _ = meetindex.index_paths(self.root)
+        before = pathlib.Path(jf).read_bytes()
+
+        new_entries = [self._entry(i) for i in range(99, 102)]   # 内容明显不同
+        orig = meetindex.os.fsync
+        meetindex.os.fsync = lambda *a: (_ for _ in ()).throw(OSError("模拟断电"))
+        try:
+            with self.assertRaises(OSError, msg="非原子写会静默成功,原索引已被覆盖"):
+                meetindex.save(new_entries, self.root)
+        finally:
+            meetindex.os.fsync = orig
+
+        self.assertEqual(pathlib.Path(jf).read_bytes(), before, "原索引被破坏了")
+        self.assertEqual(len(meetindex.load(self.root)), 30)
+
+    def test_保留原文件权限(self):
+        """mkstemp 一律建 0600,直接 replace 会把索引权限从 644 悄悄改成 600。
+        实测发生过 —— 静默改权限是那种「没人会去看,直到出问题」的副作用。
+        """
+        meetindex.save([self._entry(0)], self.root)
+        jf, mf = meetindex.index_paths(self.root)
+        for f in (jf, mf):
+            os.chmod(f, 0o644)
+        meetindex.save([self._entry(1)], self.root)
+        for f in (jf, mf):
+            self.assertEqual(os.stat(f).st_mode & 0o777, 0o644,
+                             f"{os.path.basename(f)} 权限被改了")
+
+    def test_新建文件默认644而不是600(self):
+        """索引.md 是给人看的渲染稿,不该默认只有自己能读。"""
+        meetindex.save([self._entry(0)], self.root)
+        jf, mf = meetindex.index_paths(self.root)
+        for f in (jf, mf):
+            self.assertEqual(os.stat(f).st_mode & 0o777, 0o644,
+                             f"{os.path.basename(f)} 新建权限不对")
+
+    def test_不留下临时文件(self):
+        meetindex.save([self._entry(0)], self.root)
+        leftovers = [n for n in os.listdir(self.root) if ".part" in n or n.startswith(".tmp-")]
+        self.assertEqual(leftovers, [], f"残留临时文件：{leftovers}")
+
+    def test_崩溃后也不留临时文件(self):
+        meetindex.save([self._entry(0)], self.root)
+        orig = meetindex.json.dumps
+        meetindex.json.dumps = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            with self.assertRaises(RuntimeError):
+                meetindex.save([self._entry(1)], self.root)
+        finally:
+            meetindex.json.dumps = orig
+        leftovers = [n for n in os.listdir(self.root) if ".part" in n or n.startswith(".tmp-")]
+        self.assertEqual(leftovers, [], f"崩溃后残留：{leftovers}")
+
+
+class TestLoadCorrupt(_IndexTmp):
+    """损坏时**绝不能静默返回空** —— 调用方紧接着 save(),就把损坏升级成永久丢失。"""
+
+    def test_损坏且无备份时明确报错(self):
+        jf, _ = meetindex.index_paths(self.root)
+        pathlib.Path(self.root).mkdir(exist_ok=True)
+        pathlib.Path(jf).write_text('{"version": 1, "meetings": [', encoding="utf-8")
+        with self.assertRaises(RuntimeError) as cm:
+            meetindex.load(self.root)
+        self.assertIn("rebuild", str(cm.exception), "报错要告诉用户怎么修")
+
+    def test_损坏时回退到备份(self):
+        meetindex.save([self._entry(i) for i in range(3)], self.root)
+        meetindex.save([self._entry(i) for i in range(5)], self.root)   # 这次会生成 .bak(3 场)
+        jf, _ = meetindex.index_paths(self.root)
+        pathlib.Path(jf).write_text("坏掉的内容{{{", encoding="utf-8")
+        self.assertEqual(len(meetindex.load(self.root)), 3, "没回退到备份")
+
+    def test_文件不存在时返回空是正常的(self):
+        self.assertEqual(meetindex.load(self.root), [])
+
+    def test_绝不把损坏当成空索引(self):
+        """这条是本类的核心:静默返回 [] 会让下一次 save 把索引彻底清空。"""
+        jf, _ = meetindex.index_paths(self.root)
+        pathlib.Path(self.root).mkdir(exist_ok=True)
+        pathlib.Path(jf).write_text("not json at all", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            meetindex.load(self.root)
+
+
+class TestIndexLock(_IndexTmp):
+    """登记走 save(upsert(load(), entry)) —— 整段读改写必须在锁内。
+    实测无锁时 10 个并发登记 → 索引里一场都不剩。
+    """
+
+    def test_并发登记一场都不丢(self):
+        meetindex.save([], self.root)
+        errs = []
+
+        def worker(i):
+            try:
+                time.sleep(random.random() * 0.02)
+                with meetindex.index_lock(self.root):
+                    entries = meetindex.load(self.root)
+                    time.sleep(random.random() * 0.02)   # 模拟中间的真实工作
+                    meetindex.save(meetindex.upsert(entries, self._entry(i)), self.root)
+            except Exception as e:                        # noqa: BLE001
+                errs.append(repr(e))
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        got = {e["id"] for e in meetindex.load(self.root)}
+        self.assertEqual(got, {f"会议_{i:02d}" for i in range(10)},
+                         f"丢了：{ {f'会议_{i:02d}' for i in range(10)} - got }")
+
+    def test_跨进程互斥(self):
+        """真正的并发来源是两个 meeting **进程**,所以必须跨进程验,
+        线程内测通过可能只是调度碰巧没撞上(flock 本来也是进程级的)。
+        """
+        import subprocess
+        script = (
+            "import importlib.util,sys\n"
+            "from importlib.machinery import SourceFileLoader\n"
+            f"sp=importlib.util.spec_from_loader('m',SourceFileLoader('m',{str(REPO / 'bin' / '_index.py')!r}))\n"
+            "m=importlib.util.module_from_spec(sp); sp.loader.exec_module(m)\n"
+            "try:\n"
+            f"    with m.index_lock({self.root!r}, timeout=0.3): print('拿到了')\n"
+            "except TimeoutError: print('超时')\n")
+        with meetindex.index_lock(self.root):
+            r = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stdout.strip(), "超时",
+                         f"锁没挡住另一个进程：{r.stdout!r} {r.stderr[-200:]!r}")
+
+    def test_持有者释放后另一个进程能拿到(self):
+        import subprocess
+        script = (
+            "import importlib.util\n"
+            "from importlib.machinery import SourceFileLoader\n"
+            f"sp=importlib.util.spec_from_loader('m',SourceFileLoader('m',{str(REPO / 'bin' / '_index.py')!r}))\n"
+            "m=importlib.util.module_from_spec(sp); sp.loader.exec_module(m)\n"
+            f"with m.index_lock({self.root!r}, timeout=5): print('拿到了')\n")
+        with meetindex.index_lock(self.root):
+            pass                                   # 进出一次,应当已释放
+        r = subprocess.run([sys.executable, "-c", script],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stdout.strip(), "拿到了",
+                         f"锁没释放：{r.stdout!r} {r.stderr[-200:]!r}")
+
+    def test_锁用完释放(self):
+        with meetindex.index_lock(self.root):
+            pass
+        with meetindex.index_lock(self.root, timeout=1):     # 拿得到才说明释放了
+            pass
 
 
 if __name__ == "__main__":

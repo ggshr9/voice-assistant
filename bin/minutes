@@ -289,7 +289,10 @@ def register_index(out_dir, title=None):
                 entry["summary"],
                 ask=lambda sysmsg, user: ask(sysmsg, user, max_tokens=40),
                 fallback=entry["id"])
-        idx.save(idx.upsert(idx.load(), entry))
+        # 整段读—改—写都要在锁内:两个 meeting 同时收尾时,后写的会拿过期快照
+        # 覆盖前者。实测 10 个并发登记 → 索引里一场都不剩。
+        with idx.index_lock():
+            idx.save(idx.upsert(idx.load(), entry))
         log(f"🗂  已登记进索引：{entry['title']}（recall \"…\" 可检索）")
     except Exception as e:
         log(f"（索引登记跳过：{type(e).__name__}: {e}）")
