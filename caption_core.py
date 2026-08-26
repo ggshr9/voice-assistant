@@ -107,6 +107,22 @@ _TRANS_SYS = ("你是同声传译。把用户给的这句话翻成简洁、口�
               "只输出译文本身,不要解释、不要原文、不要引号。")
 
 
+def model_chain(spec=None):
+    """CAPTION_LLM_MODEL 支持逗号分隔的候选链,前面的挂了自动退到后面。
+
+    **为什么需要**:网关上的模型会被下线。实测公司网关的 Qwen3.6 仍在 /models
+    列表里,chat 却返回 404("Received Model Group=Qwen3.6")——
+    单点配置意味着字幕直接哑掉,而且报错还看不出是模型没了。
+    """
+    raw = LLM_MODEL if spec is None else spec
+    out = []
+    for m in (raw or "").split(","):
+        m = m.strip()
+        if m and m not in out:
+            out.append(m)
+    return out or [""]
+
+
 def translate(text, src_lang, url=None):
     if src_lang == "zh" or not text:
         return text
@@ -115,7 +131,7 @@ def translate(text, src_lang, url=None):
     if LLM_KEY:
         headers["Authorization"] = f"Bearer {LLM_KEY}"
     body = {
-        "model": LLM_MODEL, "max_tokens": 200, "temperature": 0.2,
+        "model": None, "max_tokens": 200, "temperature": 0.2,   # model 由下面的候选链填
         # 必须显式关思考。开着的话本机大脑会把推理过程当译文吐出来 ——
         # 而且是明文、没有 <think> 标签，下面那行 re.sub 剥不掉。
         # 实测漏出来的是「Here's a thinking process: 1. **Analyze User Input:**…」，
@@ -130,17 +146,38 @@ def translate(text, src_lang, url=None):
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.load(r)
 
-    try:
-        out = _post(body)
-    except urllib.error.HTTPError as e:
-        # 严格端点(OpenAI/DeepSeek 等)不认 vLLM 扩展字段 —— 脱掉重试。
-        # LLM_URL 是让用户随便填的，不能假设对端是 vLLM。bin/minutes 里有同样的处理。
-        if e.code not in (400, 422):
-            raise
-        out = _post({k: v for k, v in body.items() if k != "chat_template_kwargs"})
-    zh = (out["choices"][0]["message"].get("content") or "").strip()
-    zh = re.sub(r"<think>.*?</think>", "", zh, flags=re.S).strip()
-    return zh
+    errs = []
+    for model in model_chain():
+        payload = dict(body, model=model)
+        try:
+            out = _post(payload)
+        except urllib.error.HTTPError as e:
+            # 严格端点(OpenAI/DeepSeek 等)不认 vLLM 扩展字段 —— 脱掉重试。
+            # LLM_URL 是让用户随便填的，不能假设对端是 vLLM。bin/minutes 里有同样的处理。
+            if e.code in (400, 422):
+                try:
+                    out = _post({k: v for k, v in payload.items()
+                                 if k != "chat_template_kwargs"})
+                except Exception as e2:            # noqa: BLE001
+                    errs.append(f"{model}: {e2}")
+                    continue
+            elif e.code == 404:                    # 这个模型下线了,换下一个
+                errs.append(f"{model}: 404 模型不存在")
+                continue
+            else:
+                raise
+        except Exception as e:                     # noqa: BLE001
+            errs.append(f"{model}: {type(e).__name__} {e}")
+            continue
+        if "choices" not in out:                   # 网关的错误体也可能是 200
+            errs.append(f"{model}: {str(out.get('error', out))[:120]}")
+            continue
+        zh = (out["choices"][0]["message"].get("content") or "").strip()
+        zh = re.sub(r"<think>.*?</think>", "", zh, flags=re.S).strip()
+        if zh:
+            return zh
+        errs.append(f"{model}: 空译文")
+    raise RuntimeError("翻译无可用模型 —— " + " | ".join(errs[-3:]))
 
 
 def is_noise(text):

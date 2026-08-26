@@ -163,6 +163,111 @@ class _AlwaysSpeech:
         return True
 
 
+def test_model_chain_单个():
+    assert cc.model_chain("qwen3.6") == ["qwen3.6"]
+
+
+def test_model_chain_逗号分隔按序展开():
+    assert cc.model_chain("A,B,C") == ["A", "B", "C"]
+
+
+def test_model_chain_去重且保序():
+    """重复候选会让失败时白等一轮。"""
+    assert cc.model_chain("A, B ,A") == ["A", "B"]
+
+
+def test_model_chain_空配置也要有一个候选():
+    """空串是合法的 model(有些端点忽略这个字段);返回空列表会导致一次都不尝试。"""
+    assert cc.model_chain("") == [""]
+
+
+def test_translate_首选模型404时退到下一个():
+    """网关上的模型会被下线 —— 实测公司网关的 Qwen3.6 仍在 /models 列表里,
+    chat 却返回 404。单点配置意味着字幕直接哑掉,而且报错看不出是模型没了。
+    """
+    import io as _io, json as _json, urllib.error, urllib.request
+    seen = []
+
+    class _Resp(_io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        body = _json.loads(req.data.decode())
+        seen.append(body["model"])
+        if body["model"] == "已下线":
+            raise urllib.error.HTTPError("u", 404, "Model not found", {}, None)
+        return _Resp(_json.dumps({"choices": [{"message": {"content": "你好"}}]}).encode())
+
+    orig_open, orig_model = urllib.request.urlopen, cc.LLM_MODEL
+    urllib.request.urlopen = fake_urlopen
+    cc.LLM_MODEL = "已下线,能用的"
+    try:
+        out = cc.translate("hi", "en", url="http://127.0.0.1:9999/v1/chat/completions")
+    finally:
+        urllib.request.urlopen, cc.LLM_MODEL = orig_open, orig_model
+
+    assert out == "你好", out
+    assert seen == ["已下线", "能用的"], f"退避顺序不对：{seen}"
+
+
+def test_translate_全挂时报错点名模型():
+    """从前只会抛出最后一个异常,看不出试过哪些、各自为什么挂。"""
+    import json as _json, urllib.error, urllib.request
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError("u", 404, "Model not found", {}, None)
+
+    orig_open, orig_model = urllib.request.urlopen, cc.LLM_MODEL
+    urllib.request.urlopen = fake_urlopen
+    cc.LLM_MODEL = "m1,m2"
+    try:
+        cc.translate("hi", "en", url="http://127.0.0.1:9999/v1/chat/completions")
+        assert False, "全挂了却没报错"
+    except RuntimeError as e:
+        msg = str(e)
+        assert "m2" in msg, f"报错没点名模型：{msg}"
+        assert "404" in msg, f"报错没带真实死因：{msg}"
+    finally:
+        urllib.request.urlopen, cc.LLM_MODEL = orig_open, orig_model
+
+
+def test_translate_网关返回200但没有choices也算失败():
+    """litellm 这类网关的错误体也是 200,不检查就会 KeyError。"""
+    import io as _io, json as _json, urllib.request
+
+    class _Resp(_io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        return _Resp(_json.dumps({"error": {"message": "模型没了"}}).encode())
+
+    orig_open, orig_model = urllib.request.urlopen, cc.LLM_MODEL
+    urllib.request.urlopen = fake_urlopen
+    cc.LLM_MODEL = "m1"
+    try:
+        cc.translate("hi", "en", url="http://127.0.0.1:9999/v1/chat/completions")
+        assert False, "没有 choices 却当成功了"
+    except RuntimeError as e:
+        assert "模型没了" in str(e), f"没把网关的话带出来：{e}"
+    finally:
+        urllib.request.urlopen, cc.LLM_MODEL = orig_open, orig_model
+
+
+def test_translate_中文原样返回不发请求():
+    """省一次往返,也避免把中文再翻一遍。"""
+    import urllib.request
+    orig = urllib.request.urlopen
+    urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("中文不该发请求"))
+    try:
+        assert cc.translate("已经是中文", "zh") == "已经是中文"
+        assert cc.translate("", "en") == ""
+    finally:
+        urllib.request.urlopen = orig
+
+
 if __name__ == "__main__":
     test_segment_splits_on_silence()
     test_segment_drops_too_short()
@@ -174,4 +279,12 @@ if __name__ == "__main__":
     test_segment_unlimited_by_default()
     test_translate_falls_back_when_vendor_field_rejected()
     test_translate_does_not_swallow_other_http_errors()
+    test_model_chain_单个()
+    test_model_chain_逗号分隔按序展开()
+    test_model_chain_去重且保序()
+    test_model_chain_空配置也要有一个候选()
+    test_translate_首选模型404时退到下一个()
+    test_translate_全挂时报错点名模型()
+    test_translate_网关返回200但没有choices也算失败()
+    test_translate_中文原样返回不发请求()
     print("OK")
