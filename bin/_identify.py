@@ -28,7 +28,7 @@ def main(argv):
             return 0
         d = np.load(path, allow_pickle=True)
         speakers = {str(l): d["embeddings"][i] for i, l in enumerate(d["labels"])}
-        mapping = vp.match_speakers(speakers, people, scores=True)
+        mapping = vp.match_speakers(speakers, people, scores=True, merge_clusters=True)
         if mapping:
             # 带上相似度,让 _annotate 决定要不要标「勉强够线」
             print(",".join(f"{k}={n}:{sc}" for k, (n, sc) in sorted(mapping.items())))

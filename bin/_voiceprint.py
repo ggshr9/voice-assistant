@@ -30,6 +30,7 @@ REGISTRY = os.path.expanduser("~/.config/voiceprints.json")
 THRESHOLD = 0.55      # 低于此值一律不认
 MARGIN = 0.15         # 还要比次高的人高出这么多，否则宁可匿名
 SURE = 0.75           # 达到此值才算「几乎确定」；之间的算「勉强够线」，输出里会标出来
+MERGE_SIM = 0.80      # 两簇之间相似到这个程度，才认为是同一个人被拆开了
 
 
 def is_sure(score):
@@ -60,7 +61,8 @@ def best_score(embedding, person):
     return max((cosine(embedding, e) for e in person.get("embeddings") or []), default=0.0)
 
 
-def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN, scores=False):
+def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN, scores=False,
+                   merge_clusters=False, merge_sim=MERGE_SIM):
     """把本场会的说话人映射到已注册的人。
 
     Args:
@@ -71,6 +73,12 @@ def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN, scores=
 
     Args (续):
         scores: 为 True 时返回 ``{标签: (姓名, 相似度)}``，便于上游标注可信度。
+        merge_clusters: 允许一个人认领**多个**簇 —— 分人器常把同一个人拆开
+            （真实数据：标称 8 人的会里两两相似度中位数 0.213，却有 4 对在
+            0.88~0.93，那是同人水平）。开启后，额外的簇必须**与主簇本身相似**
+            ≥ merge_sim 才会被并入，只是各自跟注册者沾边不算 —— 否则两个真人
+            都沾边时会被错并成一个。
+        merge_sim: 上面那个簇间相似度门槛。
 
     Returns:
         ``{标签: 姓名}``（或带分数的二元组），只含认得出的。
@@ -96,13 +104,22 @@ def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN, scores=
         scored.append((top[0], label, top[1]))
 
     mapping = {}
+    primary = {}                # 姓名 -> 主簇标签（分数最高的那个）
     used_names, used_labels = set(), set()
     for score, label, name in sorted(scored, reverse=True):
-        if label in used_labels or name in used_names:
-            continue            # 一对一
+        if label in used_labels:
+            continue
+        if name in used_names:
+            if not merge_clusters:
+                continue        # 一对一
+            # 过分割修复：只有跟主簇本身足够像，才认为是同一个人被拆开
+            if cosine(speakers[label], speakers[primary[name]]) < merge_sim:
+                continue
+        else:
+            primary[name] = label
+            used_names.add(name)
         mapping[label] = (name, round(score, 4)) if scores else name
         used_labels.add(label)
-        used_names.add(name)
     return mapping
 
 

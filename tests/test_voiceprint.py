@@ -215,6 +215,50 @@ class TestConfidence(unittest.TestCase):
         m = vp.match_speakers({"S": vec(77)}, self.people, scores=True)
         self.assertEqual(m, {})
 
+class TestOverSegmentationRepair(unittest.TestCase):
+    """分人器把同一个人拆成多簇时，声纹应该把它们都认领回来。
+
+    真实数据里这很常见：那场标称 8 人的会，两两相似度中位数 0.213（正常不同人的
+    量级），但 SPEAKER_01↔05 是 0.927、01↔06 是 0.900 —— 那是「同一个人两段录音」
+    的水平（实测同人 0.876/0.943）。也就是 8 簇里大概只有 4~5 个真人。
+
+    原来的一对一约束是为了防瞎猜，但在过分割场景下恰恰做错了事：认领一簇、
+    把另一簇留成匿名牌，稿子里同一个人一半有名字一半没有。
+    """
+
+    def setUp(self):
+        self.me = vec(1)
+        self.people = [{"name": "张三", "is_me": True, "embeddings": [self.me.tolist()]}]
+
+    def test_同一个人的多簇都被认领(self):
+        a, b = near(self.me, 0.05, seed=11), near(self.me, 0.08, seed=12)
+        m = vp.match_speakers({"S0": a, "S1": b}, self.people, merge_clusters=True)
+        self.assertEqual(m.get("S0"), "张三")
+        self.assertEqual(m.get("S1"), "张三", "同一个人的第二簇也该拿到名字")
+
+    def test_默认仍是一对一_不破坏既有行为(self):
+        a, b = near(self.me, 0.05, seed=11), near(self.me, 0.08, seed=12)
+        m = vp.match_speakers({"S0": a, "S1": b}, self.people)
+        self.assertEqual(len([k for k, v in m.items() if v == "张三"]), 1)
+
+    def test_只是碰巧过线的簇不会被顺带认领(self):
+        """合并要靠【簇之间也相似】，不能只看各自跟注册者的分数 ——
+        否则两个真人都沾边时会被错误合并成一个人。"""
+        strong = near(self.me, 0.05, seed=11)
+        weak = near(self.me, 0.9, seed=13)          # 勉强沾边，但跟 strong 不像
+        m = vp.match_speakers({"S0": strong, "S1": weak}, self.people,
+                              merge_clusters=True, threshold=0.4, margin=0.0)
+        self.assertEqual(m.get("S0"), "张三")
+        self.assertIsNone(m.get("S1"), "跟主簇不相似的不该被合并进来")
+
+    def test_带分数时多簇各自带自己的分数(self):
+        a, b = near(self.me, 0.05, seed=11), near(self.me, 0.08, seed=12)
+        m = vp.match_speakers({"S0": a, "S1": b}, self.people,
+                              merge_clusters=True, scores=True)
+        self.assertEqual(m["S0"][0], "张三")
+        self.assertEqual(m["S1"][0], "张三")
+        self.assertNotEqual(m["S0"][1], m["S1"][1], "两簇的相似度不该被抹成一样")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
