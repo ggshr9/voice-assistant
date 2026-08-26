@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["numpy"]
 # ///
 """服务器侧 meeting_pipeline / jobs 的纯逻辑测试。
 
@@ -12,6 +12,7 @@ bug —— `ff[5:5] = ["-ac","1"]` 插进了 `-ar` 和 `16000` 中间,生成 `-a
 
 跑: uv run tests/test_web_pipeline.py
 """
+import os
 import importlib.util
 import pathlib
 import sys
@@ -184,6 +185,146 @@ class TestAskErrors(unittest.TestCase):
         self.m.LLM_MODEL = "m1"
         with self.assertRaises(RuntimeError):
             self.m.ask("s", "u")
+
+
+def load_stt():
+    """stt.py 顶层会加载模型,SKIP_MODEL 让它跳过。"""
+    os.environ["SKIP_MODEL"] = "1"
+    fake = types.ModuleType("config")
+    fake.MODEL = "x"; fake.LLM_URL = "http://127.0.0.1:1/v1/chat/completions"
+    fake.LLM_KEY = ""; fake.LLM_MODEL = "m1,m2"
+    sys.modules["config"] = fake
+    return _load("wstt", WEB / "stt.py")
+
+
+class TestSttModelChain(unittest.TestCase):
+    """minutes_lib 和 caption_core 都加过 fallback,唯独实时字幕的 translate 是单点。
+
+    于是配置改成 "Qwen3.6,qwen3.5-...,DeepSeek" 之后,它把整串当成一个模型名
+    发出去,网关回 404 —— **外语字幕的中文翻译全线不工作**,而配置看起来是对的。
+    改一处漏两处比不改更糟。
+    """
+
+    def setUp(self):
+        self.m = load_stt()
+
+    def test_逗号分隔按序展开(self):
+        self.assertEqual(self.m.model_chain("A,B,C"), ["A", "B", "C"])
+
+    def test_去重且保序(self):
+        self.assertEqual(self.m.model_chain("A, B ,A"), ["A", "B"])
+
+    def test_空配置也有一个候选(self):
+        self.assertEqual(self.m.model_chain(""), [""])
+
+    def test_单个模型不受影响(self):
+        self.assertEqual(self.m.model_chain("Qwen3.6"), ["Qwen3.6"])
+
+
+class TestRetryClassification(unittest.TestCase):
+    """换不换下一个候选,分界线是**错在模型上还是错在网关上**。
+
+    第一版只认 404,实测撞上 429 就整个放弃了,而换个模型立刻能用。
+    """
+
+    def setUp(self):
+        self.m = load_stt()
+
+    def _http(self, code):
+        import urllib.error
+        return urllib.error.HTTPError("u", code, "err", {}, None)
+
+    def test_模型侧错误要换下一个(self):
+        for code in (404, 429, 500, 502, 503):
+            self.assertTrue(self.m._try_next(self._http(code)),
+                            f"HTTP {code} 应换下一个候选")
+
+    def test_网关连不上就别耗时间(self):
+        """三个候选 × 60 秒超时 = 白等三分钟,实时字幕等不起。"""
+        import urllib.error
+        self.assertFalse(self.m._try_next(urllib.error.URLError("connection refused")))
+        self.assertFalse(self.m._try_next(OSError("timed out")))
+
+    def test_客户端自己写错了不该重试(self):
+        self.assertFalse(self.m._try_next(self._http(400)))
+        self.assertFalse(self.m._try_next(self._http(401)))
+
+
+class TestTranslateDegrades(unittest.TestCase):
+    def setUp(self):
+        self.m = load_stt()
+
+    def test_中文原样返回不发请求(self):
+        self.assertEqual(self.m.translate("已经是中文", "zh"), "已经是中文")
+
+    def test_空文本直接返回(self):
+        self.assertEqual(self.m.translate("", "en"), "")
+
+    def test_全挂时返回空而不是抛异常(self):
+        """字幕宁可只显示原文,也别因为翻译失败整条消失。"""
+        self.assertEqual(self.m.translate("hello", "en"), "")
+
+    def test_translate真的把候选挨个试过(self):
+        """光测 model_chain() 这个纯函数不够 —— 那正是这次 bug 的形状:
+        函数写好了、配置也对,但调用方压根没用它。必须断言【实际发出的请求】。
+        """
+        seen = []
+        import json as _json, urllib.error, urllib.request
+        orig = urllib.request.urlopen
+
+        def fake(req, timeout=None):
+            seen.append(_json.loads(req.data.decode())["model"])
+            raise urllib.error.HTTPError("u", 404, "Model not found", {}, None)
+
+        urllib.request.urlopen = fake
+        try:
+            self.m.LLM_MODEL = "m1,m2,m3"
+            self.m.translate("hello", "en")
+        finally:
+            urllib.request.urlopen = orig
+        self.assertEqual(seen, ["m1", "m2", "m3"], f"没有逐个试候选：{seen}")
+
+    def test_流式也把候选挨个试过(self):
+        seen = []
+        import json as _json, urllib.error, urllib.request
+        orig = urllib.request.urlopen
+
+        def fake(req, timeout=None):
+            seen.append(_json.loads(req.data.decode())["model"])
+            raise urllib.error.HTTPError("u", 429, "Too Many Requests", {}, None)
+
+        urllib.request.urlopen = fake
+        try:
+            self.m.LLM_MODEL = "m1,m2"
+            list(self.m.translate_stream("hello", "en"))
+        finally:
+            urllib.request.urlopen = orig
+        self.assertEqual(seen, ["m1", "m2"], f"流式没走候选链：{seen}")
+
+    def test_首个候选可用时不再试后面的(self):
+        """退避不能变成"每次都把所有模型跑一遍"。"""
+        seen = []
+        import io as _io, json as _json, urllib.request
+
+        class _R(_io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake(req, timeout=None):
+            seen.append(_json.loads(req.data.decode())["model"])
+            return _R(_json.dumps({"choices": [{"message": {"content": "译文"}}]}).encode())
+
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake
+        try:
+            self.m.LLM_MODEL = "m1,m2,m3"
+            self.assertEqual(self.m.translate("hello", "en"), "译文")
+        finally:
+            urllib.request.urlopen = orig
+        self.assertEqual(seen, ["m1"], f"第一个就成功了却还试了别的：{seen}")
+
+    def test_流式全挂时不抛异常(self):
+        self.assertEqual("".join(self.m.translate_stream("hello", "en")), "")
 
 
 if __name__ == "__main__":

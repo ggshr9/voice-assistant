@@ -18,6 +18,8 @@ test.use({ ignoreHTTPSErrors: true });   // 隧道上证书域名对不上是正
 
 async function enter(page) {
   await page.goto(URL);
+  await page.evaluate(() => { try { sessionStorage.clear(); } catch (e) {} });
+  await page.reload({ waitUntil: 'domcontentloaded' });
   await page.fill('#pw', PW);
   await page.click('#enter');
   await expect(page.locator('#gate')).toBeHidden();
@@ -33,7 +35,13 @@ test.describe('口令门', () => {
       const u = r.url();
       if (u.includes('/session') || u.endsWith('/sessions')) fetched.push(u.slice(-40));
     });
+    // 必须自己保证起点干净:前端「sessionStorage 里有口令就自动进门」是**正确行为**,
+    // 而同一 worker 里前面的测试会留下口令 —— 这条于是随机挂,而产品并没有回归。
+    // (实测:全量跑挂、单独跑过 —— 典型的测试间污染。)
     await page.goto(URL, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => { try { sessionStorage.clear(); } catch (e) {} });
+    fetched.length = 0;                       // 清掉刚才那次加载产生的请求记录
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.locator('#gate')).toBeVisible();
     await page.waitForTimeout(2000);
     expect(fetched, `鉴权前就请求了：${fetched.join(', ')}`).toEqual([]);

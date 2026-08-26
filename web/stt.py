@@ -1,7 +1,7 @@
 """实时 STT(faster-whisper / CUDA) + 翻译(litellm 网关)。"""
 import os, re, json, asyncio, urllib.request
 import numpy as np
-from config import MODEL, LLM_URL, LLM_KEY, LLM_MODEL
+from config import LLM_URL, LLM_KEY, LLM_MODEL   # MODEL 已不再用:改 Qwen3-ASR 了
 
 STT_LOCK = asyncio.Lock()   # 串行化 GPU 转写,避免并发会话同时调 model.transcribe 互相串
 # 精确匹配只能挡住那几个固定短语。真实的幻觉是【长句和重复】——
@@ -144,21 +144,74 @@ def is_noise(text):
     return is_repetitive(c)
 
 
-def translate(text, lang):
-    if lang == "zh" or not text:
-        return text
-    body = json.dumps({
-        "model": LLM_MODEL, "max_tokens": 200, "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": "你是同声传译。把这句话翻成简洁、口语化的简体中文,只输出译文本身,不要解释、不要原文、不要引号。"},
-            {"role": "user", "content": text}],
-    }).encode()
+_TRANS_SYS = ("你是同声传译。把这句话翻成简洁、口语化的简体中文,"
+              "只输出译文本身,不要解释、不要原文、不要引号。")
+
+
+def model_chain(spec=None):
+    """CAPTION_LLM_MODEL 支持逗号分隔的候选链,前面的挂了自动退到后面。
+
+    **这里曾经是坏的**:minutes_lib 和 caption_core 都加过 fallback,唯独
+    实时字幕的 translate 还是单点 —— 于是配置改成 "Qwen3.6,qwen3.5-...,DeepSeek"
+    之后,它把整串当成一个模型名发出去,网关回 404,外语字幕的中文翻译全线不工作。
+    改一处漏两处比不改更糟:配置看起来是对的,功能却是死的。
+    """
+    out = []
+    for m in ((LLM_MODEL if spec is None else spec) or "").split(","):
+        m = m.strip()
+        if m and m not in out:
+            out.append(m)
+    return out or [""]
+
+
+def _headers():
     h = {"Content-Type": "application/json"}
     if LLM_KEY:
         h["Authorization"] = f"Bearer {LLM_KEY}"
-    req = urllib.request.Request(LLM_URL, data=body, headers=h)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return (json.load(r)["choices"][0]["message"].get("content") or "").strip()
+    return h
+
+
+def _try_next(e):
+    """这个错误值不值得换下一个候选模型。
+
+    分界线是**错在模型上还是错在网关上**:
+      404 模型下线、429 限流、5xx 后端故障 —— 都是【这个模型】的问题,换一个很可能就好
+      连不上/DNS/超时                    —— 是【网关本身】的问题,再试几个只是白等
+    第一版只认 404,结果实测撞上 429 就整个放弃了,而换个模型立刻能用。
+    """
+    code = getattr(e, "code", None)
+    if code is not None:
+        return code in (404, 408, 409, 429) or code >= 500
+    return False           # 没有 HTTP 状态码 = 连接层面的问题,别再耗时间
+
+
+def translate(text, lang):
+    if lang == "zh" or not text:
+        return text
+    errs = []
+    for model in model_chain():
+        body = json.dumps({
+            "model": model, "max_tokens": 200, "temperature": 0.2,
+            "messages": [{"role": "system", "content": _TRANS_SYS},
+                         {"role": "user", "content": text}],
+        }).encode()
+        try:
+            req = urllib.request.Request(LLM_URL, data=body, headers=_headers())
+            with urllib.request.urlopen(req, timeout=60) as r:
+                out = json.load(r)
+            if "choices" not in out:               # 网关的错误体也可能是 200
+                errs.append(f"{model}: {str(out.get('error', out))[:100]}")
+                continue
+            zh = (out["choices"][0]["message"].get("content") or "").strip()
+            if zh:
+                return zh
+            errs.append(f"{model}: 空译文")
+        except Exception as e:                     # noqa: BLE001
+            errs.append(f"{model}: {type(e).__name__} {str(e)[:80]}")
+            if not _try_next(e):
+                break                              # 不是"模型没了"就别把候选挨个试一遍
+    print(f"翻译失败: {' | '.join(errs[-3:])}", flush=True)
+    return ""                                      # 字幕宁可只显示原文,也别整条消失
 
 
 def translate_stream(text, lang):
@@ -166,18 +219,31 @@ def translate_stream(text, lang):
     if lang == "zh" or not text:
         yield text
         return
-    body = json.dumps({
-        "model": LLM_MODEL, "max_tokens": 200, "temperature": 0.2, "stream": True,
-        "messages": [
-            {"role": "system", "content": "你是同声传译。把这句话翻成简洁、口语化的简体中文,只输出译文本身,不要解释、不要原文、不要引号。"},
-            {"role": "user", "content": text}],
-    }).encode()
-    h = {"Content-Type": "application/json"}
-    if LLM_KEY:
-        h["Authorization"] = f"Bearer {LLM_KEY}"
-    req = urllib.request.Request(LLM_URL, data=body, headers=h)
+    # 流式这条也要走候选链。**只在第一个 token 到达之前**允许换模型 ——
+    # 已经吐出半句再切换,前端会看到两段拼接的乱译文。
+    model = None
+    r = None
+    errs = []
+    for cand in model_chain():
+        body = json.dumps({
+            "model": cand, "max_tokens": 200, "temperature": 0.2, "stream": True,
+            "messages": [{"role": "system", "content": _TRANS_SYS},
+                         {"role": "user", "content": text}],
+        }).encode()
+        try:
+            req = urllib.request.Request(LLM_URL, data=body, headers=_headers())
+            r = urllib.request.urlopen(req, timeout=60)
+            model = cand
+            break
+        except Exception as e:                     # noqa: BLE001
+            errs.append(f"{cand}: {type(e).__name__} {str(e)[:80]}")
+            if not _try_next(e):
+                break
+    if r is None:
+        print(f"流式翻译失败: {' | '.join(errs[-3:])}", flush=True)
+        return
     got = False
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with r:
         for raw in r:                                  # 逐行读 SSE
             line = raw.decode("utf-8", "ignore").strip()
             if not line.startswith("data:"):

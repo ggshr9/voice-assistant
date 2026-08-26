@@ -5,6 +5,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SESSIONS = os.path.expanduser("~/voice-svc/sessions")
 os.makedirs(SESSIONS, exist_ok=True)
 
+# 已废弃:实时字幕 2026-08-26 改用 Qwen3-ASR(见 stt.py 的 ASR_MODEL),
+# 这个常量只剩 web/meeting/transcribe_step.py 那条【上传批处理】的老路在用。
+# 留着但别再往 stt.py 里引 —— 两个名字指两个模型是踩坑的开始。
 MODEL = os.environ.get("STT_MODEL", "large-v3-turbo")
 LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
