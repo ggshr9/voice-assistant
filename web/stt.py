@@ -79,30 +79,15 @@ def is_repetitive(text, min_reps=MIN_REPS, min_unit=MIN_UNIT_LEN):
 #   Qwen3-ASR-1.7B                 → "Hello。哈喽，哈喽，哈喽。嗯。咱们呢是孩子嘛…"  ✅
 # 批处理管线(asr_diarize_step.py)本来就用它,模型早在机器上、注释里就写着
 # 「中文 SOTA,无 whisper 幻觉」—— 只有实时这条路一直落在 whisper 上。
-ASR_MODEL = os.environ.get("CAPTION_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B")
-ASR_DEVICE = os.environ.get("CAPTION_ASR_DEVICE", "cuda:1")   # 避开批处理占的 cuda:0
-
-# 语言代码:界面用 zh/en,Qwen3-ASR 要全称
-_LANG = {"zh": "Chinese", "en": "English", "yue": "Cantonese", "ja": "Japanese"}
-_LANG_BACK = {v: k for k, v in _LANG.items()}
-
-# 每秒音频允许生成多少 token。**这是延迟护栏,不是质量参数**:
-# 实测某个 10 秒片段上模型进入生成循环,跑满 max_new_tokens=256 用了 5.67 秒,
-# 而正常片段只要 0.13 秒。把上限按时长给,最坏延迟就跟着时长走而不是失控。
-# 中文正常语速约 5 字/秒,给 8 token/秒 是宽松的两倍余量。
-TOKENS_PER_SEC = 8
-MIN_NEW_TOKENS, MAX_NEW_TOKENS = 24, 256
-
+# 模型私有的知识(加载方式、调用怪癖、语言映射)全在 asr_backends.py ——
+# 换模型只动那一个文件,这里保持模型无关:能量门、幻觉过滤、(pcm,lang)->(text,lang) 契约。
+# 选择后端: CAPTION_ASR_BACKEND=qwen3|whisper  (默认 qwen3)
 if os.environ.get("SKIP_MODEL"):           # 测试/导入冒烟用,不占 GPU
     model = None
     print("STT: 跳过模型加载(SKIP_MODEL)", flush=True)
 else:
-    import torch
-    from qwen_asr import Qwen3ASRModel
-    print(f"加载 {ASR_MODEL} 到 {ASR_DEVICE} ...", flush=True)
-    model = Qwen3ASRModel.from_pretrained(ASR_MODEL, dtype=torch.bfloat16,
-                                          device_map=ASR_DEVICE,
-                                          max_new_tokens=MAX_NEW_TOKENS)
+    from asr_backends import load_backend
+    model = load_backend()
     print("会议工作台后端就绪", flush=True)
 
 
@@ -118,21 +103,7 @@ def transcribe_pcm(pcm, lang=None):
     if rms(pcm) < MIN_RMS:                  # 静音不送模型,它会开始编
         return "", lang or ""
     audio = np.frombuffer(pcm, dtype="<i2").astype("float32") / 32768.0
-    secs = len(audio) / 16000.0
-    cap = max(MIN_NEW_TOKENS, min(MAX_NEW_TOKENS, int(secs * TOKENS_PER_SEC)))
-    name = _LANG.get(lang or "", None)
-    # transcribe() 的签名里没有 max_new_tokens —— 它读的是实例属性 self.max_new_tokens
-    # (qwen3_asr.py:379)。第一版按参数传,静默走了 TypeError 兜底,上限从没生效,
-    # 那个 5.8 秒的生成循环也就一直在。
-    model.max_new_tokens = cap
-    r = model.transcribe(audio=(audio, 16000), language=name)
-    if not r:
-        return "", lang or ""
-    item = r[0]
-    text = (getattr(item, "text", "") or "").strip()
-    # 模型能自己报语种;报不出就退回调用方指定的那个
-    got = getattr(item, "language", None) or name
-    return text, _LANG_BACK.get(got, lang or "")
+    return model.transcribe(audio, lang)
 
 
 def is_noise(text):

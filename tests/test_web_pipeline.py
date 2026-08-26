@@ -327,5 +327,107 @@ class TestTranslateDegrades(unittest.TestCase):
         self.assertEqual("".join(self.m.translate_stream("hello", "en")), "")
 
 
+def load_asr_backends():
+    return _load("wasrb", WEB / "asr_backends.py")
+
+
+class TestBackendRegistry(unittest.TestCase):
+    """换模型只动 asr_backends.py —— 这层的价值就在注册表和统一契约。"""
+
+    def setUp(self):
+        self.b = load_asr_backends()
+
+    def test_内置两个后端都注册了(self):
+        self.assertIn("qwen3", self.b.BACKENDS)
+        self.assertIn("whisper", self.b.BACKENDS)
+
+    def test_未知后端报错并列出可用的(self):
+        with self.assertRaises(ValueError) as cm:
+            self.b.load_backend("不存在的模型")
+        msg = str(cm.exception)
+        self.assertIn("qwen3", msg, "要列出可用后端,让人知道能选什么")
+
+    def test_注册新后端不用改任何现有代码(self):
+        """这是这层存在的理由:新模型 = 一个类 + 一行装饰器。"""
+        @self.b.register("fake")
+        class Fake:
+            def transcribe(self, audio, lang_ui):
+                return "假转写", lang_ui or ""
+        try:
+            inst = self.b.load_backend("fake")
+            self.assertEqual(inst.transcribe(None, "zh"), ("假转写", "zh"))
+        finally:
+            self.b.BACKENDS.pop("fake", None)
+
+    def test_环境变量选择后端(self):
+        @self.b.register("fromenv")
+        class F:
+            pass
+        try:
+            os.environ["CAPTION_ASR_BACKEND"] = "fromenv"
+            self.assertIsInstance(self.b.load_backend(), F)
+        finally:
+            os.environ.pop("CAPTION_ASR_BACKEND", None)
+            self.b.BACKENDS.pop("fromenv", None)
+
+    def test_qwen的token上限按时长走(self):
+        """延迟护栏是 qwen 私有知识,搬进后端后不能丢:10 秒段曾因生成循环耗 5.67 秒。"""
+        import numpy as np
+        cls = self.b.BACKENDS["qwen3"]
+        inst = cls.__new__(cls)                    # 不加载真模型
+        calls = {}
+        class FakeM:
+            def transcribe(self, audio, language):
+                calls["cap"] = self.max_new_tokens
+                return []
+        inst.m = FakeM()
+        inst.transcribe(np.zeros(10 * 16000, dtype="float32"), "zh")
+        self.assertEqual(calls["cap"], 80, "10 秒 × 8 token/秒")
+        inst.transcribe(np.zeros(1 * 16000, dtype="float32"), "zh")
+        self.assertEqual(calls["cap"], cls.MIN_NEW, "短段也要有下限")
+
+    def test_qwen语言映射不外漏(self):
+        """契约:进出都是界面码 zh/en。Chinese/English 是 qwen 的私事。"""
+        import numpy as np
+        cls = self.b.BACKENDS["qwen3"]
+        inst = cls.__new__(cls)
+        seen = {}
+        class FakeM:
+            max_new_tokens = 0
+            def transcribe(self, audio, language):
+                seen["lang"] = language
+                class R: text = "好"; language = "Chinese"
+                return [R()]
+        inst.m = FakeM()
+        text, lang = inst.transcribe(np.zeros(16000, dtype="float32"), "zh")
+        self.assertEqual(seen["lang"], "Chinese", "送进 qwen 的要是全称")
+        self.assertEqual(lang, "zh", "吐出来的要是界面码")
+
+
+class TestSttDelegates(unittest.TestCase):
+    """transcribe_pcm 必须真的把活交给后端 —— 上次的教训:纯函数都对,调用方没用它。"""
+
+    def test_能量门之后交给后端(self):
+        m = load_stt()
+        calls = []
+        class FakeBackend:
+            def transcribe(self, audio, lang):
+                calls.append((len(audio), lang))
+                return "转写结果", "zh"
+        m.model = FakeBackend()
+        import numpy as np
+        loud = (np.sin(np.linspace(0, 800, 16000)) * 20000).astype("<i2").tobytes()
+        self.assertEqual(m.transcribe_pcm(loud, "zh"), ("转写结果", "zh"))
+        self.assertEqual(calls, [(16000, "zh")])
+
+    def test_静音被能量门拦住不进后端(self):
+        m = load_stt()
+        class Boom:
+            def transcribe(self, audio, lang):
+                raise AssertionError("静音不该进模型")
+        m.model = Boom()
+        self.assertEqual(m.transcribe_pcm(b"\x00" * 32000, "zh"), ("", "zh"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

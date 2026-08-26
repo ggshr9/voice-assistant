@@ -143,6 +143,7 @@
   #zh{color:var(--fg);font-size:var(--fs);font-weight:600;margin-top:8px;min-height:40px;line-height:1.22;letter-spacing:-.02em}
   #zh.typing::after{content:"▍";color:var(--accent);margin-left:2px;animation:caret 1s steps(1) infinite}
   @keyframes caret{50%{opacity:0}}
+  .live-note{margin-top:8px;font-size:12px;opacity:.55;line-height:1.6}
   #capOff{display:none;color:var(--muted);font-size:13.5px;text-align:center;padding:34px 8px}
   #liveView.nocap #cur,#liveView.nocap #hist{display:none}
   #liveView.nocap #capOff{display:block}
@@ -299,12 +300,14 @@
         <button class="btn ghost sm" id="pip">画中画</button>
       </div>
       <div id="cur"><div id="orig"></div><div id="zh">字幕会显示在这里…</div></div>
+      <div class="live-note">⚡ 实时字幕是<b>边说边出的草稿</b>，为速度牺牲了准确率；
+        停止后点「生成会议纪要」会重新完整转写（含分人、去噪），那才是最终质量。</div>
       <div id="hist"></div>
       <div id="capOff">🔇 字幕已关 · 仍在录音与实时转写，记录照常保存</div>
       <div id="afterStop" style="display:none">
         <button class="btn ghost" id="viewBtn">📄 查看记录</button>
         <button class="btn" id="genBtn">✨ 生成会议纪要</button>
-        <span class="muted">实时记录已即时生成；生成纪要可再出整理去噪+分人版。</span>
+        <span class="muted">实时记录只是草稿；「生成纪要」会重新完整转写（分人+去噪），以那份为准。</span>
         <div id="prog"></div>
       </div>
     </div>
