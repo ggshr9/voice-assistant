@@ -343,3 +343,46 @@ DiariZen（BUT-FIT，2025）在公开榜单上 DER 明显优于 pyannote 3.1，�
 
 环境保留在服务器 `~/voice-svc/DiariZen/`，将来真遇到多人场景可直接复测。
 复现脚本见该目录，跑的时候记得 `CUDA_VISIBLE_DEVICES` 避开在用的卡。
+
+---
+
+## 部署 web/ 的正确姿势（2026-08-26 事故记录）
+
+**仓库里的 `web/` 是脱敏镜像，不能直接 scp 覆盖服务器。**
+
+为公开而做的脱敏把真实值换成了占位符：
+
+| 文件 | 仓库（镜像） | 服务器（生产） |
+|---|---|---|
+| `web_caption.py` | `caption.example.com/fullchain.pem` | 真实域名证书路径 |
+| `config.py` | `CAPTION_LLM_URL` 默认空 | 内网网关地址 |
+
+实测事故：直接 `scp web/web_caption.py` 覆盖后，证书路径指向 `example.com`，
+`ctx.load_cert_chain` 抛 `FileNotFoundError`，服务进入 **3 秒一次的重启循环**
+（restart counter 从 20 涨到 34），直到从备份把真实路径改回来。
+
+**正确做法**：用 `bin/push-web`，它会
+
+1. 先在服务器上把待覆盖的文件备份到 `~/voice-svc/_bak_<时间戳>/`
+2. 逐文件扫描脱敏占位值（`example.com` / `__HOME__` / `YOUR_` 等），**命中就拒推**
+3. 全部干净才推送，然后重启并轮询到服务真的返回 200
+
+含占位值的文件必须**在服务器上打补丁**（`python3 -` + 精确字符串替换），
+不要整文件覆盖。护栏本身有测试：`tests/test_push_web.sh`。
+
+## 网页 UI 的自动化测试
+
+`tests/e2e/web.spec.js`（Playwright，13 例）覆盖口令门、会议库、页面健康度、
+以及**完整的上传 → 纪要**链路。需要两个环境变量，都不写进仓库：
+
+```bash
+ssh -N -L 127.0.0.1:21443:127.0.0.1:443 <你的服务器> &     # 隧道，避免依赖公网 DNS
+CAPTION_URL=https://127.0.0.1:21443 \
+CAPTION_PW=<口令> \
+CAPTION_FIXTURE=/path/to/一段短音频.m4a \
+  npx playwright test tests/e2e/web.spec.js
+```
+
+⚠️ 本机若已有服务占着目标端口，`ssh -L` 可能只绑到 IPv6 `[::1]`，
+而 curl/浏览器走 IPv4 会打到那个无关服务上（踩过，表现为莫名其妙的 426）。
+所以显式写 `-L 127.0.0.1:<port>:...`，并先 `lsof -nP -iTCP:<port>` 确认端口空闲。

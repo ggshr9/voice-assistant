@@ -1,0 +1,60 @@
+#!/bin/bash
+# 把仓库 web/ 的改动推到服务器 —— 与 sync-web(拉回)方向相反。
+#
+# ⚠️ 为什么需要这个脚本而不是直接 scp:
+#   仓库里的 web/ 是【脱敏镜像】,证书域名、内网网关地址都被换成了占位值
+#   (caption.example.com / 空默认值)。直接 scp 覆盖会把占位值推上生产 ——
+#   实测干过一次:web_caption.py 被覆盖后证书路径指向 example.com,
+#   服务进入 3 秒一次的重启循环,直到从备份把真实路径改回来。
+#
+#   所以这里只做三件事:先备份、再逐文件比对占位值、发现就拒推。
+#
+#   用法: push-web [文件...]        不给文件则推 web/ 下所有 .py/.html
+#         PUSH_WEB_FORCE=1 push-web  跳过占位值检查(除非你很确定,否则别用)
+set -e
+[ -f "$HOME/.config/sync-web.env" ] && . "$HOME/.config/sync-web.env"
+REMOTE="${SYNC_WEB_REMOTE:-gpu-server}"
+REPO="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+# 仓库里为公开而写的占位值 —— 任何一个出现在待推文件里都说明这份是镜像,不是生产版
+PLACEHOLDERS='example\.com|example\.org|__HOME__|YOUR_|xxx\.xxx\.xxx'
+
+cd "$REPO"
+FILES=("$@")
+[ ${#FILES[@]} -eq 0 ] && mapfile -t FILES < <(cd web && find . -name "*.py" -o -name "*.html" | sed 's|^\./||')
+
+echo "目标：$REMOTE:~/voice-svc/web/"
+BAD=0
+for f in "${FILES[@]}"; do
+  src="web/${f#web/}"
+  [ -f "$src" ] || { echo "  ✗ 找不到 $src"; BAD=1; continue; }
+  if hits="$(grep -nE "$PLACEHOLDERS" "$src")"; then
+    echo "  ✗ $src 含脱敏占位值,拒绝推送："
+    echo "$hits" | sed 's/^/       /' | head -3
+    BAD=1
+  else
+    echo "  ✓ $src"
+  fi
+done
+if [ "$BAD" = 1 ] && [ "${PUSH_WEB_FORCE:-}" != "1" ]; then
+  echo
+  echo "已中止。含占位值的文件请在服务器上【打补丁】,不要整文件覆盖 ——"
+  echo "服务器那份才有真实域名/内网地址,覆盖了服务起不来。"
+  exit 1
+fi
+
+TS=$(date +%Y%m%d_%H%M%S)
+echo "→ 备份服务器现状到 _bak_$TS"
+ssh "$REMOTE" "mkdir -p ~/voice-svc/_bak_$TS && cd ~/voice-svc/web && cp -p --parents $(printf '%s ' "${FILES[@]}") ~/voice-svc/_bak_$TS/ 2>/dev/null || true"
+for f in "${FILES[@]}"; do
+  scp -q "web/${f#web/}" "$REMOTE:~/voice-svc/web/${f#web/}"
+done
+echo "✅ 已推送 ${#FILES[@]} 个文件（回滚：ssh $REMOTE 'cp -r ~/voice-svc/_bak_$TS/* ~/voice-svc/web/'）"
+echo "→ 重启并等待就绪"
+ssh "$REMOTE" 'kill -TERM $(pgrep -f "python web_caption.py" | head -1) 2>/dev/null
+  for i in $(seq 1 20); do
+    sleep 3
+    [ "$(curl -sk -o /dev/null -w %{http_code} --max-time 5 https://127.0.0.1/ 2>/dev/null)" = "200" ] \
+      && { echo "✅ 服务已恢复"; exit 0; }
+  done
+  echo "❌ 服务没起来,看日志：journalctl -u caption-web -n 40"; exit 1'

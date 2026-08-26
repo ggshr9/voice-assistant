@@ -32,3 +32,8 @@ cf.ini
 # 声纹是生物特征:代码要可追溯、这类数据要可删除,生命周期相反,绝不入库
 voiceprints.json
 *.embeddings.npz
+
+# Playwright
+node_modules/
+test-results/
+playwright-report/
