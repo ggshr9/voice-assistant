@@ -210,5 +210,54 @@ class TestNamesArgParsing(unittest.TestCase):
         self.assertIn("张三:abc：开始吧", self._run("SPEAKER_00=张三:abc"))
 
 
+class TestCJKCoverage(unittest.TestCase):
+    """「不需要词间空格」的文字要按 Unicode 区段列全,别只写汉字。
+
+    早先 _CJK 只有 汉字 + 中文标点 + 全角形式,于是日文假名、韩文谚文后面会被
+    插进一个空格(`あ` + `hi` → `あ hi`)——这些文字本来就不用空格分词,
+    插进去是把转写文本弄脏。项目本身支持 --language,日韩会议不是假想场景。
+    """
+
+    def test_日文假名后不补空格(self):
+        for ch in ("あ", "ア", "ん", "ー", "ヶ"):
+            self.assertFalse(annotate.needs_space(ch, "hi"), f"{ch} 后面不该补空格")
+
+    def test_韩文谚文后不补空格(self):
+        for ch in ("한", "글", "ㄱ"):
+            self.assertFalse(annotate.needs_space(ch, "hi"), f"{ch} 后面不该补空格")
+
+    def test_生僻汉字后不补空格(self):
+        """汉字扩展 A 与兼容表意区 —— 人名地名里会出现。"""
+        for ch in ("㐀", "䶵", "豈"):
+            self.assertFalse(annotate.needs_space(ch, "hi"), f"{ch} 后面不该补空格")
+
+    def test_中日韩标点后不补空格(self):
+        for ch in ("。", "、", "」", "）", "〉", "《"):
+            self.assertFalse(annotate.needs_space(ch, "Word"), f"{ch} 后面不该补空格")
+
+    def test_通用标点刻意不算CJK(self):
+        """`…`(U+2026)在通用标点区,中英文共用 —— 中文里不该补空格、
+        英文里 `wait… Word` 反而该补。这是真歧义,不替调用方决定,
+        保持既有行为(补)并在此固定下来,免得日后被"顺手扩大覆盖"改掉。
+        """
+        self.assertTrue(annotate.needs_space("…", "Word"))
+
+    def test_拉丁之间仍然补空格(self):
+        """扩大 CJK 覆盖不能顺手把正常的英文分词弄丢。"""
+        self.assertTrue(annotate.needs_space("English", "word"))
+        self.assertTrue(annotate.needs_space("2000", "QPS"))
+        self.assertTrue(annotate.needs_space("QPS", "2000"))
+
+    def test_中英混排行为不变(self):
+        self.assertFalse(annotate.needs_space("中文", "English"))
+        self.assertFalse(annotate.needs_space("English", "中文"))
+        self.assertFalse(annotate.needs_space("用", "Redis"))
+
+    def test_非字符串不崩(self):
+        """上游给了非字符串就当"不补",别把整条转写流程带崩。"""
+        for prev, nxt in ((1, "a"), ("a", ["x"]), (None, "a"), ("a", None), ({}, {})):
+            self.assertFalse(annotate.needs_space(prev, nxt), f"({prev!r},{nxt!r}) 应返回 False")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

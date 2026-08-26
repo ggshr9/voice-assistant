@@ -23,14 +23,33 @@ import string
 import sys
 
 _LATIN = re.compile(r"[A-Za-z0-9]")
-# CJK 汉字 + 中文标点 + 全角字符
-_CJK = re.compile(r"[　-〿一-鿿＀-￯]")
+# 「不需要词间空格」的东方文字。按 Unicode 区段列，别只写汉字 ——
+# 早先只有 汉字 + 中文标点 + 全角，于是日文假名和韩文谚文后面会被插进一个空格
+# （`あ` + `hi` → `あ hi`）。这些文字本来就不用空格分词，插进去是把文本弄脏。
+_CJK = re.compile(
+    "["
+    "\u1100-\u11FF"      # 谚文字母
+    "\u3000-\u303F"      # CJK 标点（　、。〈〉…）
+    "\u3040-\u309F"      # 平假名
+    "\u3130-\u318F"      # 谚文兼容字母（ㄱㄴㄷ…）
+    "\u30A0-\u30FF"      # 片假名
+    "\u3400-\u4DBF"      # 汉字扩展 A（生僻字）
+    "\u4E00-\u9FFF"      # 汉字基本区
+    "\uA960-\uA97F"      # 谚文字母扩展 A
+    "\uAC00-\uD7AF"      # 谚文音节
+    "\uF900-\uFAFF"      # 汉字兼容表意
+    "\uFF00-\uFFEF"      # 半角/全角形式
+    "]")
+# 刻意不含 U+2026「…」等通用标点:中英文共用,中文里不该补空格、
+# 英文里 `wait… Word` 反而该补 —— 这是真歧义,不替调用方决定。
 
 
 def needs_space(prev, nxt):
     """两段词级文本之间要不要补一个空格。"""
     if not prev or not nxt:
         return False
+    if not isinstance(prev, str) or not isinstance(nxt, str):
+        return False                 # 上游给了非字符串就当"不补",别把整条流程带崩
     a, b = prev[-1], nxt[0]
     if a.isspace() or b.isspace():
         return False

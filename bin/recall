@@ -103,24 +103,88 @@ def load_meeting_text(entry, max_chars=MAX_CONTEXT_CHARS):
             continue
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        if len(text) > max_chars:
-            return text[:max_chars], True
-        return text, False
+        return trim_middle(text, max_chars)
     return "", False
 
 
+_ELLIPSIS = "\n\n〔……中间略去 {n} 字……〕\n\n"
+
+
+def trim_middle(text, max_chars):
+    """超长时**掐掉中间**,保留开头和结尾。
+
+    Returns:
+        (正文, 是否被截断)
+
+    从前是 ``text[:max_chars]`` 只留开头 —— 但会议的结论、待办、期限几乎总在
+    最后:"那就定 Redis""九月九号之前上灰度""散会"。只取前半截,恰好把
+    最该被问到的部分丢掉,而 recall 最常见的问题就是「最后定的是什么」。
+    掐中间保留两头,是这类文本上信息密度最高的取法。
+    """
+    if max_chars <= 0:                    # 预算被分光了,这场一个字也放不下
+        return "", bool(text)
+    if len(text) <= max_chars:
+        return text, False
+    marker = _ELLIPSIS.format(n=len(text) - max_chars)
+    budget = max_chars - len(marker)
+    if budget <= 0:                       # 上限小到放不下标记,退回只取开头
+        return text[:max_chars], True
+    head = budget * 2 // 3                # 开头交代背景,结尾承载结论 —— 结尾给足
+    tail = budget - head
+    return text[:head] + marker + text[-tail:], True
+
+
+def _split_budget(sizes, total):
+    """把总预算分给各场会:先按均分给,短会用不完的额度让给长会。
+
+    这样两场「一短一长」不会让长会被腰斩,而总量仍然守得住。
+    """
+    n = len(sizes)
+    if n == 0:
+        return []
+    quota = [0] * n
+    remaining, active = total, list(range(n))
+    while active:
+        share = remaining // len(active)
+        if share <= 0:
+            break
+        done = [i for i in active if sizes[i] <= share]
+        if not done:                      # 剩下的都超额 → 平分了事
+            for i in active:
+                quota[i] += share
+            remaining -= share * len(active)
+            break
+        for i in done:
+            quota[i] += sizes[i]
+            remaining -= sizes[i]
+        active = [i for i in active if i not in done]
+    return quota
+
+
 def build_context(entries, picks, max_chars=MAX_CONTEXT_CHARS):
-    """把选中的会拼成第二段的输入。"""
+    """把选中的会拼成第二段的输入。
+
+    ``max_chars`` 是**所有会加起来**的上限。从前它是按【每场】施加的 ——
+    名字叫 MAX_CONTEXT_CHARS 却能吐出它的 N 倍(实测 3 场 → 72055 字),
+    而 top 是用户可传的(`recall 10 "…"` 就是 24 万字),足以撑爆上下文窗口。
+    """
+    picked = [entries[i] for i in picks if 0 <= i < len(entries)]
+    raw = []
+    for e in picked:
+        text, _ = load_meeting_text(e, max_chars=10 ** 9)   # 先原样读,预算在下面分
+        raw.append((e, text))
+    quota = _split_budget([len(t) for _, t in raw], max_chars)
+
     blocks, notes = [], []
-    for i in picks:
-        e = entries[i]
-        text, cut = load_meeting_text(e, max_chars)
+    for (e, text), q in zip(raw, quota):
         if not text:
             continue
+        body, cut = trim_middle(text, q)
         head = f"### 会议：{e.get('title') or e.get('id')}（{e.get('date') or '日期不明'}）"
-        blocks.append(f"{head}\n{text}")
+        blocks.append(f"{head}\n{body}")
         if cut:
-            notes.append(f"{e.get('title') or e.get('id')}（只取了前 {max_chars} 字）")
+            notes.append(f"{e.get('title') or e.get('id')}（{len(text)} 字，"
+                         f"取了首尾共 {q} 字，中间略去）")
     return "\n\n".join(blocks), notes
 
 
