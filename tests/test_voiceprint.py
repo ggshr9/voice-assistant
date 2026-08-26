@@ -6,6 +6,10 @@
 
 全部注入假向量，不需要 GPU、不碰真声纹。跑: uv run tests/test_voiceprint.py
 """
+import os
+import random
+import threading
+import time
 import importlib.util
 import pathlib
 import tempfile
@@ -331,6 +335,111 @@ class TestDegenerateVectors(unittest.TestCase):
                   self._p("张三", A), self._p("李四", B)]
         got = vp.match_speakers({"S0": A, "S1": B}, people)
         self.assertEqual(got, {"S0": "张三", "S1": "李四"})
+
+
+class TestRegistryDurability(unittest.TestCase):
+    """声纹是生物特征,而且**不可重建**。
+
+    索引损坏还能 `_index.py rebuild` 从转写目录重来;声纹重建要当初那些 .npz,
+    多半已经不在了 —— 等于要每个人重新录一遍。所以落盘必须原子,
+    损坏必须能回退,而且绝不能静默当成空表(那会让下一次 save 彻底清空)。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._tmp.name, "voiceprints.json")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _people(self, n=5):
+        return [{"name": f"人{i}", "is_me": i == 0,
+                 "embeddings": [[0.1] * 8], "sources": [f"s{i}"]} for i in range(n)]
+
+    def test_写到一半崩溃时原文件分毫不动(self):
+        vp.save_registry(self._people(), self.path)
+        before = pathlib.Path(self.path).read_bytes()
+        orig = vp.os.fsync
+        vp.os.fsync = lambda *a: (_ for _ in ()).throw(OSError("模拟断电"))
+        try:
+            with self.assertRaises(OSError):
+                vp.save_registry(self._people(2), self.path)
+        finally:
+            vp.os.fsync = orig
+        self.assertEqual(pathlib.Path(self.path).read_bytes(), before, "声纹库被破坏了")
+        self.assertEqual(len(vp.load_registry(self.path)), 5)
+
+    def test_不留下临时文件(self):
+        vp.save_registry(self._people(), self.path)
+        d = os.path.dirname(self.path)
+        self.assertEqual([n for n in os.listdir(d) if ".part" in n], [])
+
+    def test_权限是600(self):
+        """生物特征,不该让同机其他用户随便读。"""
+        vp.save_registry(self._people(), self.path)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_备份也是600(self):
+        """备份同样是生物特征 —— 主文件锁了、后门开着等于没锁。
+
+        关键场景是【源文件权限本来就不对】:copy2 会原样保留源权限,
+        所以旧版本留下的 644 文件、或从别处还原来的副本,会把 644 带进 .bak。
+        源文件已经是 600 时这条断言测不出东西(copy2 顺带就对了)。
+        """
+        vp.save_registry(self._people(), self.path)
+        os.chmod(self.path, 0o644)                 # 模拟旧版本/外部还原留下的宽权限
+        vp.save_registry(self._people(3), self.path)
+        self.assertEqual(os.stat(self.path + ".bak").st_mode & 0o777, 0o600,
+                         "备份继承了源文件的宽权限")
+
+    def test_源文件权限不对时也会被收紧(self):
+        vp.save_registry(self._people(), self.path)
+        os.chmod(self.path, 0o644)
+        vp.save_registry(self._people(3), self.path)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600,
+                         "重写之后主文件权限没收紧")
+
+    def test_损坏时回退备份(self):
+        vp.save_registry(self._people(5), self.path)
+        vp.save_registry(self._people(3), self.path)      # 这次生成 .bak(5 人)
+        pathlib.Path(self.path).write_text("坏内容{{{", encoding="utf-8")
+        self.assertEqual(len(vp.load_registry(self.path)), 5)
+
+    def test_损坏且无备份时明确报错(self):
+        pathlib.Path(self.path).write_text("坏内容{{{", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as cm:
+            vp.load_registry(self.path)
+        self.assertIn("重新注册", str(cm.exception), "要说清后果:声纹不可重建")
+
+    def test_绝不把损坏当成空表(self):
+        pathlib.Path(self.path).write_text("[]不是对象", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            vp.load_registry(self.path)
+
+    def test_文件不存在时返回空是正常的(self):
+        self.assertEqual(vp.load_registry(self.path), [])
+
+    def test_并发注册一条都不丢(self):
+        vp.save_registry([], self.path)
+        errs = []
+
+        def worker(i):
+            try:
+                with vp.registry_lock(self.path):
+                    people = vp.load_registry(self.path)
+                    time.sleep(random.random() * 0.01)
+                    vp.save_registry(
+                        vp.add_embedding(people, f"人{i}", [0.1] * 8, source=f"s{i}"),
+                        self.path)
+            except Exception as e:                        # noqa: BLE001
+                errs.append(repr(e))
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        got = {p["name"] for p in vp.load_registry(self.path)}
+        self.assertEqual(got, {f"人{i}" for i in range(8)}, f"丢了：{got}")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,12 @@
 数据放 `~/.config/voiceprints.json`，**不进 git** —— 代码要可追溯、生物特征要可删除，
 两者生命周期相反。
 """
+import contextlib
+import fcntl
+import shutil
+import tempfile
+import time
+import sys
 import math
 import json
 import os
@@ -163,21 +169,96 @@ def my_speaker(mapping, people):
 
 
 # ---------- 注册表读写 ----------
+@contextlib.contextmanager
+def registry_lock(path=REGISTRY, timeout=30):
+    """给声纹注册表的「读—改—写」整段加锁。
+
+    who label / enroll / forget 都是 save(改(load()))。两个 meeting 同时收尾
+    并自动登记时,后写的会拿过期快照覆盖前者,前者那次注册就白做了。
+    """
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    lf = os.path.join(d, "." + os.path.basename(path) + ".lock")
+    fd = os.open(lf, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > deadline:
+                    raise TimeoutError(f"等声纹库锁超过 {timeout}s：{lf}")
+                time.sleep(0.05)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def load_registry(path=REGISTRY):
+    """读注册表。损坏时回退 .bak,再不行明确报错 —— **绝不静默返回空**。
+
+    静默返回 [] 最坏:调用方紧接着 save(),就把损坏升级成永久丢失。
+    而声纹和索引不同 —— 索引能用 `_index.py rebuild` 从转写目录重建,
+    声纹重建需要当初那些 .npz,那些多半已经不在了,等于要所有人重新录一遍。
+    """
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as f:
-        return json.load(f).get("people", [])
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("people", [])
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        bak = path + ".bak"
+        if os.path.exists(bak):
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    people = json.load(f).get("people", [])
+                print(f"⚠️ {path} 损坏（{e}），已回退到 {bak}（{len(people)} 人）",
+                      file=sys.stderr)
+                return people
+            except Exception:                      # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"声纹库损坏且无可用备份：{path}\n  {e}\n"
+            f"  声纹无法从转写目录重建 —— 若有旧副本请先还原，否则只能重新注册。") from e
 
 
 def save_registry(people, path=REGISTRY):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "people": people}, f, ensure_ascii=False, indent=2)
+    """原子落盘 + 留一份上一版备份。
+
+    从前是直接 open(path,"w") —— 那一刻文件就被截断了。实测在写入中途模拟
+    Ctrl+C:注册表从 19970 字节变成 26 字节,全部声纹当场蒸发。
+    （与索引、录音 m4a 是同一类错误:截断在先、内容在后。）
+
+    这里刻意不复用 _index.py 的同名工具:_voiceprint.py 会被 sync-web 推到
+    服务器单独使用,跨文件 import 会在那边断掉。十行重复胜过一个易碎的依赖。
+    """
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    payload = json.dumps({"version": 1, "people": people}, ensure_ascii=False, indent=2)
+    if os.path.exists(path):
+        try:
+            shutil.copy2(path, path + ".bak")
+            os.chmod(path + ".bak", 0o600)         # 备份同样是生物特征
+        except OSError:
+            pass
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
     try:
-        os.chmod(path, 0o600)      # 生物特征，别让同机其他用户随便读
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)                       # 生物特征，别让同机其他用户随便读
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 

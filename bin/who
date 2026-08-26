@@ -95,9 +95,12 @@ def cmd_label(argv):
 
     idx = labels.index(raw)
     source = f"{os.path.basename(d)}/{to_display.get(raw, raw)}"
-    people = vp.add_embedding(vp.load_registry(), name, embeddings[idx],
-                              source=source, is_me=is_me)
-    vp.save_registry(people)
+    # 整段读—改—写都在锁内:两个 meeting 同时收尾自动登记时,
+    # 后写的会拿过期快照覆盖前者,前者那次注册就白做了。
+    with vp.registry_lock():
+        people = vp.add_embedding(vp.load_registry(), name, embeddings[idx],
+                                  source=source, is_me=is_me)
+        vp.save_registry(people)
     who = f"{name}（我本人）" if is_me else name
     print(f"✅ 已把 {to_display.get(raw, raw)} 认领为 {who}")
     print(f"   来源：{source}")
@@ -134,12 +137,31 @@ def cmd_forget(argv):
         print("用法: who forget <名字>", file=sys.stderr)
         return 1
     name = argv[0]
-    people = vp.load_registry()
-    if not any(p.get("name") == name for p in people):
-        print(f"注册表里没有「{name}」。")
-        return 0
-    vp.save_registry(vp.forget(people, name))
-    print(f"✅ 已删除 {name} 的全部声纹。")
+    with vp.registry_lock():
+        people = vp.load_registry()
+        person = next((p for p in people if p.get("name") == name), None)
+        if person is None:
+            known = "、".join(p.get("name", "?") for p in people) or "（空）"
+            print(f"注册表里没有「{name}」。已注册：{known}")
+            return 0
+
+        # 声纹删了不可重建 —— 索引能用 `_index.py rebuild` 从转写目录重来,
+        # 声纹重建要当初那些 .npz,多半已经不在了,等于要本人重新录一遍。
+        # 所以这里必须先确认,而且要把删的是什么摆出来。
+        n = len(person.get("embeddings") or [])
+        src = "、".join((person.get("sources") or [])[:3]) or "来源不明"
+        mine = "（标记为我本人）" if person.get("is_me") else ""
+        print(f"将删除「{name}」{mine}：{n} 条声纹，来自 {src}")
+        print("声纹无法从转写重建，删了要本人重新录一遍。")
+        if "--yes" not in argv and "-y" not in argv:
+            if not sys.stdin.isatty():
+                print("❌ 非交互环境请显式加 --yes。", file=sys.stderr)
+                return 1
+            if input(f"确认删除请输入名字「{name}」：").strip() != name:
+                print("已取消，什么都没动。")
+                return 0
+        vp.save_registry(vp.forget(people, name))
+    print(f"✅ 已删除 {name} 的全部声纹（上一版留在 {vp.REGISTRY}.bak）。")
     return 0
 
 
