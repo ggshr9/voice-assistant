@@ -1,22 +1,33 @@
-# voice-assistant — 全本地语音栈（转写 / 会议纪要 / 实时字幕 / 语音对话 / 声音克隆）
+# voice-assistant — 本地会议语音栈（转写 / 声纹识别 / 会议纪要 / 实时字幕）
 
-一套跑在 Apple Silicon 上的语音工具集：录音 → ASR → LLM → 结构化纪要 / 声纹识别 / 同传字幕 / 克隆音回答。
+录音 → ASR → 声纹分人 → LLM → 结构化纪要，加上自然语言检索和 MCP 接口。
+音频处理全程本地，不上传给任何第三方。
 
-**默认全本地**：转写、声纹分人、声纹识别、TTS 全部在本机跑，不联网。纪要与检索走本机
-大脑（Qwen3.6-35B-8bit），这一档需要 64GB 内存。
+**两个独立实现，各自锁定一个平台** —— 按你手上的机器选，不必两个都有：
 
-**也可以混合**：内存不够或不想常驻 38GB，把 `CAPTION_LLM_URL` 指向任何 OpenAI 兼容端点
-（OpenAI / DeepSeek / Ollama / vLLM）即可 —— **转写、分人、声纹这些仍然全在本地**，
-只有生成纪要那一步出去。代码会自动适配严格端点，不用改任何东西。
+| | 平台 | 形态 | 用什么 |
+|---|---|---|---|
+| **本机版** | macOS + Apple Silicon | CLI + 菜单栏 App + MCP | MLX（`mlx-qwen3-asr` / `vllm-mlx`） |
+| **服务器版** | Linux + NVIDIA | 网页（浏览器录音/上传） | CUDA（`faster-whisper` + `pyannote`） |
 
-## 三种用法
+服务器版**能独立闭环**：上传音频 → 转写 → 分人 → 声纹识别 → 纪要，全在 Linux 上跑完，
+不需要 Mac。两边共享 `prompts.py`（纪要 prompt）和 `_voiceprint.py`（声纹逻辑）。
 
-| 形态 | 入口 | 说明 |
-|---|---|---|
-| **CLI** | `bin/` | 主力。`rec` 录音 → `meeting` 转写分人 → `minutes` 出纪要 |
-| **菜单栏 App** | `meeting_app.py` | macOS 顶栏 🎙️ 图标，点两下出纪要。只是壳，内部仍调 CLI |
-| **MCP** | `bin/meetings_mcp.py` | 让 agent（Claude Code 等）直接查会议档案，4 个工具 |
-| **网页版** | `web/` | 浏览器共享标签页声音 → 实时字幕；上传音频 → 会议纪要（服务器 CUDA 版，见下） |
+> ⚠️ 本机版的平台锁定是硬的：MLX 是苹果的框架，录音走 avfoundation，
+> 菜单栏靠 rumps/AppKit —— 这些在 Linux/Windows 上都没有对应物。
+
+**LLM 那一步可换**：默认用本机大脑（Qwen3.6-35B-8bit，需 64GB 内存），
+也可以把 `CAPTION_LLM_URL` 指向任何 OpenAI 兼容端点（OpenAI / DeepSeek / Ollama / vLLM）。
+**换成云端点后，转写、分人、声纹仍然全在本地**，只有生成纪要那一步出去。
+
+## 四个入口
+
+| 形态 | 平台 | 入口 | 说明 |
+|---|---|---|---|
+| **CLI** | macOS | `bin/` | 主力。`rec` 录音 → `meeting` 转写分人 → `minutes` 出纪要 → `recall` 检索 |
+| **菜单栏 App** | macOS | `meeting_app.py` | 顶栏 🎙️ 图标，点两下出纪要。只是壳，内部仍调 CLI |
+| **MCP** | macOS | `bin/meetings_mcp.py` | 让 agent（Claude Code 等）直接查会议档案，4 个工具 |
+| **网页版** | Linux + NVIDIA | `web/` | 浏览器共享标签页声音 → 实时字幕；上传音频 → 会议纪要。**独立闭环，不依赖 Mac** |
 
 ## 快速开始
 
