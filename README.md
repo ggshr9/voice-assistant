@@ -40,27 +40,68 @@
 
 ## 快速开始
 
-> 完整的前置条件、服务器部署、灾难恢复清单见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
-> 下面这段假设你已经装好 Homebrew / ffmpeg / uv，建好了聚合设备，并同意了 pyannote 的模型条款。
+两条路互不依赖，**选一条走完就能用**。完整前置条件、灾难恢复清单见
+**[docs/DEPLOY.md](docs/DEPLOY.md)**。
+
+### A. 服务器版 — 想让一群人（各种系统）都能用
+
+部署在一台 Linux + NVIDIA 机器上，之后大家开浏览器就行。
+
+```bash
+git clone https://github.com/ggshr9/voice-assistant.git ~/voice-svc && cd ~/voice-svc
+
+# 两个虚拟环境，依赖互相冲突，不能合并
+uv venv .venv --python 3.12                 # 实时字幕 + STT 服务
+uv pip install --python .venv/bin/python faster-whisper aiohttp webrtcvad numpy flask
+uv venv .venv-meeting --python 3.12         # 会议批处理
+uv pip install --python .venv-meeting/bin/python \
+    pyannote.audio torch torchaudio torchcodec qwen-asr scipy
+
+# 配置（任何 OpenAI 兼容端点都行，不必自建网关）
+cat > web/secrets.env <<'EOF'
+export CAPTION_LLM_URL=https://api.deepseek.com/v1/chat/completions
+export CAPTION_LLM_KEY=sk-...
+export CAPTION_LLM_MODEL=deepseek-chat
+export CAPTION_ACCESS_PW=自己定个访问口令
+EOF
+echo 'export HF_TOKEN=hf_xxx' > hf.env      # 分人要它；先去同意 pyannote 条款
+chmod 600 web/secrets.env hf.env
+
+# systemd（占位符必须先渲染）见 docs/DEPLOY.md
+```
+
+证书用 certbot 的 Cloudflare DNS-01 签（机器不必暴露 80 端口），细节在 DEPLOY.md。
+
+### B. 本机版 — 一个人在自己 Mac 上用
+
+需要 **macOS + Apple Silicon**；纪要那步用本机 35B 大脑要 64GB 内存，
+内存不够就把 `CAPTION_LLM_URL` 指向云端点，其余仍全本地。
 
 ```bash
 brew install ffmpeg switchaudio-osx
-brew install --cask blackhole-2ch     # 录线上会议必需
+brew install --cask blackhole-2ch     # 录线上会议必需，装完要在「音频 MIDI 设置」建两个设备
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install mlx-qwen3-asr vllm-mlx
 
-./install.sh          # 把 bin/* 软链到 ~/.local/bin
-setup                 # 自检：逐项告诉你缺什么、怎么补
-llm start             # 拉起本地大脑（vllm-mlx + Qwen3.6-35B-A3B-8bit，:8080）
+git clone https://github.com/ggshr9/voice-assistant.git ~/voice-assistant
+cd ~/voice-assistant && ./install.sh   # 把 bin/* 软链到 ~/.local/bin
+setup                                  # 自检：逐项告诉你缺什么、怎么补
 
-rec online            # 录线上会议（需音频MIDI里建好聚合设备「会议录制」）
-meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
-# → 转写 + 声纹分人 + 自动生成 纪要_xxx.md
+llm start                              # 本机大脑（:8080）
+rec online                             # 录线上会议，静音 5 分钟自停
+meeting ~/会议录音/线上会议_*.m4a 8      # 转写 + 分人 + 声纹认人 + 纪要
+recall "上次聊联调的结论是什么"          # 自然语言检索
 ```
+
+`setup` 会实际去连、去查每一项（工具链、模型、HF token、pyannote 条款、
+两个音频设备、大脑），缺什么直接把命令给你 —— 不用照着文档一条条比对。
 
 ## 组件
 
-### CLI（`bin/`）
+> 每节标了平台。Linux 只关心「网页版」「声纹识别」「共享 prompt」三节，
+> 其余是 macOS 本机版的东西。
+
+### CLI（`bin/`）· macOS
 - `rec` — 录音。`rec` 录麦克风，`rec online` 录聚合设备（线上会议：对方+自己）
   - 持续静音 5 分钟自动停（`REC_SILENCE_SEC=0` 关闭、`REC_SILENCE_DB` 调灵敏度）。会后忘了停录会让 ASR 把静音幻觉成一长串「嗯」
 - `meeting <文件> [说话人数|-] [nominutes] [--me 说话人N]` — 转写（mlx-qwen3-asr / Qwen3-ASR-1.7B-8bit）+ pyannote 声纹分人（走 GPU）+ 自动调 `minutes`
@@ -77,7 +118,7 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 - `recall "问题"` — **用自然语言问过去的会议**。两段式检索：先用标题+摘要选出相关的会，再把那几场全文喂给大脑作答并标出处。`recall --list` 列出全部
 - `clone <参考音> <原文> <新内容>` — 声音克隆（IndexTTS-1.5）
 
-### 会议索引
+### 会议索引 · macOS
 
 `minutes` 生成纪要后自动登记，也可 `_index.py rebuild` 重建：
 
@@ -90,7 +131,7 @@ meeting ~/会议录音/线上会议_20260619_2301.m4a 8 --me 说话人1
 
 **为什么不上向量库**：会议是几十到几百场量级，全部摘要加起来才几 KB，本来就塞得进上下文；而检索真正需要的是「读懂」不是「找相似」。多一个嵌入模型 + 索引库，换不来准确率，只增加两个会坏的东西。
 
-### 声纹识别
+### 声纹识别 · 两边都有
 
 注册后，会议转写里的 `说话人A/B/C` 自动换成真名，`minutes` 也不再需要手动传 `--me`。
 
@@ -115,7 +156,7 @@ SYNC_VOICEPRINTS=1 sync-web     # 声纹会留存在公司那台机器上
 
 撤回就删两处：本机 `~/.config/voiceprints.json` 和服务器 `~/voice-svc/voiceprints.json`。
 
-### 共享 prompt
+### 共享 prompt · 两边都有
 
 `prompts.py`（仓库根）是纪要 prompt 的**唯一真源**，本机 CLI 与服务器网页版都从它导入。
 
@@ -123,7 +164,7 @@ SYNC_VOICEPRINTS=1 sync-web     # 声纹会留存在公司那台机器上
 
 ⚠️ **它的同步方向与 `web/` 相反**：`web/` 的真源在服务器（拉回），`prompts.py` 的真源在仓库（`sync-web` 推过去）。理由是 prompt 属于产品决策，该跟仓库走版本。
 
-### MCP server（给 agent 用）
+### MCP server（给 agent 用）· macOS
 
 ```bash
 claude mcp add -s user meetings -- python3 ~/voice-assistant/bin/meetings_mcp.py
@@ -142,14 +183,14 @@ stdlib 手写 JSON-RPC 2.0 over stdio，不依赖 mcp SDK，零外部依赖（�
 
 **全部同步秒回** —— 转写/纪要是 `meeting` 和 `minutes` 离线跑完的成品，MCP 只读，所以不需要异步 job + 轮询那套。
 
-### 本机服务（Python）
+### 本机服务（Python）· macOS
 - `stt_server.py` — 常驻 STT（mlx-whisper large-v3-turbo），`:8082/transcribe`
 - `clone_tts_server.py` — 常驻克隆 TTS，`:8083`
 - `caption_core.py` / `caption_overlay.py` / `caption.py` — 实时字幕的纯逻辑 / 浮窗 / 编排器
 - `assistant.py` / `chat.py` — 语音助手与连续对话实现
 - `meeting_app.py` + `meeting_app_launch.sh` — rumps 菜单栏壳
 
-### 网页版（`web/`）
+### 网页版（`web/`）· Linux + NVIDIA 部署，任何系统使用
 - `web_caption.py` — aiohttp + WSS：浏览器推 16k PCM → VAD 切句 → faster-whisper(CUDA) → 网关翻译 → 推回 `{orig, zh}`
 - `config.py` / `jobs.py` / `sessions.py` / `stt.py` — 共享配置、任务队列、会话与录音留存、STT 封装
 - `run_web.sh` — 启动脚本；`server/` 是 `~/voice-svc` 根上的服务代码（`stt_server_cuda.py` / `run_stt.sh` / 3 个 systemd unit），也由 `sync-web` 拉回
@@ -166,12 +207,29 @@ stdlib 手写 JSON-RPC 2.0 over stdio，不依赖 mcp SDK，零外部依赖（�
 >
 > 脚本把安全边界固化了：排除 `secrets.env`（含 `CAPTION_LLM_KEY` / `CAPTION_ACCESS_PW`）和 TLS 私钥，并**自动把服务器版写死的内网网关默认值洗成空**——线上靠 `secrets.env` 注入，仓库必须保持「默认空 + 缺失即报错」，否则每拉一次就把内网拓扑带回来一次。最后会复查一遍，有残留就退出非零。
 
-## 常驻服务（LaunchAgent）
+## 常驻服务 · macOS 用 LaunchAgent，Linux 用 systemd
 
-`launchagents/` 里两个 plist，`cp` 到 `~/Library/LaunchAgents/` 后 `launchctl load` 即可：
+两边的 unit 文件里 `__HOME__` / `__USER__` **都是占位符，必须先渲染**，不能直接 `cp`。
+
+**macOS**（`launchagents/`）：
+
+```bash
+for f in launchagents/*.plist; do
+  sed "s|__HOME__|$HOME|g" "$f" > ~/Library/LaunchAgents/"$(basename "$f")"
+done
+launchctl load ~/Library/LaunchAgents/com.local.{meeting-app,caption}.plist
+```
 
 - `com.local.meeting-app.plist` — 菜单栏 App（`RunAtLoad=false`，由菜单项按需启停）
 - `com.local.caption.plist` — 实时字幕，菜单栏「🌐 实时字幕」开关它
+
+**Linux**（`server/systemd/`，渲染命令见 [DEPLOY.md](docs/DEPLOY.md)）：
+
+- `caption-web.service` — 网页版，`Restart=always`，绑 443
+- `caption-stt.service` — STT 服务（faster-whisper on CUDA）
+- `caption-renew.timer` — 每天续证书
+
+`tests/test_systemd_units.py` 会检查这些文件里不许写死家目录、渲染后仍合法。
 
 ## 配置
 
