@@ -9,7 +9,8 @@ import webrtcvad
 from aiohttp import web
 
 from config import (HERE, SESSIONS, SR, FRAME, SILENCE_TAIL, MIN_SPEECH,
-                    RETENTION_DAYS, SESSIONS_WARN_GB, MAX_UPLOAD_BYTES)
+                    RETENTION_DAYS, SESSIONS_WARN_GB, MAX_UPLOAD_BYTES,
+                    MAX_SEG_SEC)
 from stt import STT_LOCK, transcribe_pcm, is_noise, translate, translate_stream
 from sessions import (check_pw, new_session, sess_dir, read_meta, write_meta,
                       finalize_wav, wav_seconds, recording_path, dir_size_bytes, prune_old_audio)
@@ -72,6 +73,11 @@ async def ws_handler(request):
         if m.get("channels") != ch:
             m["channels"] = ch
             write_meta(d, m)
+    # 界面上选的语言要真的用上 —— 从前它存进 meta.json 就没人再看,
+    # live 字幕永远走自动检测。实测安静的中文被判成 en 的置信度只有 0.51,
+    # 于是「哈喽哈喽」被音译成 "Honey, honey"。
+    sess_lang = ((read_meta(d) or {}).get("lang") if d else None) or ""
+    stt_lang = sess_lang if sess_lang in ("zh", "en") else None
     pcm_f = open(os.path.join(d, "recording.pcm"), "ab") if d else None
     jsonl_f = open(os.path.join(d, "live.jsonl"), "a", encoding="utf-8") if d else None
     await ws.send_json({"status": "ready"})
@@ -110,7 +116,8 @@ async def ws_handler(request):
                 continue
             try:
                 async with STT_LOCK:
-                    text, lang = await loop.run_in_executor(None, transcribe_pcm, pcm)
+                    text, lang = await loop.run_in_executor(
+                        None, transcribe_pcm, pcm, stt_lang)
             except Exception:
                 continue
             if sid > last_final["v"] and text and not is_noise(text):
@@ -125,7 +132,8 @@ async def ws_handler(request):
             sid, pcm = item
             try:
                 async with STT_LOCK:
-                    text, lang = await loop.run_in_executor(None, transcribe_pcm, pcm)
+                    text, lang = await loop.run_in_executor(
+                        None, transcribe_pcm, pcm, stt_lang)
                 last_final["v"] = sid                          # 定稿,迟到草稿失效
                 if is_noise(text):
                     await safe_send({"seg": sid, "done": True, "zh": ""})  # 撤掉草稿行
@@ -198,10 +206,19 @@ async def ws_handler(request):
                         since_partial = 0                        # 每 ~0.7s 推一版草稿(只留最新)
                         partial["sid"], partial["pcm"] = cur_sid, bytes(seg)
                         partial_ev.set()
-                    if silence >= SILENCE_TAIL:
+                    # 断句只靠静音是不够的:有人一口气说两分钟,就攒出一个两分钟的段。
+                    # 那既拖垮延迟,也让模型更容易跑飞。本机版早就加了 MAX_SPEECH=12,
+                    # 服务端一直没有 —— 实测真会议里出现过 130 秒的整段。
+                    too_long = len(seg) >= MAX_SEG_SEC * SR * 2
+                    if silence >= SILENCE_TAIL or too_long:
                         if nspeech * 0.03 >= MIN_SPEECH:
                             seg_q.put_nowait((cur_sid, bytes(seg)))  # 交给消费者,主循环立刻继续读音频
-                        triggered, silence, nspeech = False, 0.0, 0
+                        if too_long and silence < SILENCE_TAIL:
+                            cur_sid += 1                 # 硬断:话没说完,下一段接着算新句
+                            seg, since_partial = bytearray(), 0
+                            silence, nspeech = 0.0, 1
+                        else:
+                            triggered, silence, nspeech = False, 0.0, 0
     finally:
         if triggered and nspeech * 0.03 >= MIN_SPEECH:   # 收尾:停止时没等到静音的最后一句也补上
             seg_q.put_nowait((cur_sid, bytes(seg)))
