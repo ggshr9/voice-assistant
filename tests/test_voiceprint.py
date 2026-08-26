@@ -172,6 +172,49 @@ class TestRegistry(unittest.TestCase):
     def test_删除不存在的人不炸(self):
         self.assertEqual(vp.forget([], "查无此人"), [])
 
+class TestConfidence(unittest.TestCase):
+    """认出来了还不够 —— 得让人知道有多确定。
+
+    门槛 0.55 之上就直接写真名，0.56 和 0.94 在输出里长得一模一样，
+    用户没法判断该不该信。成熟项目（minutes）的说话人标签带 high/medium，
+    我们至少要能把「勉强够线」和「几乎确定」区分开。
+    """
+
+    def setUp(self):
+        self.me, self.other = vec(1), vec(2)
+        self.people = [
+            {"name": "张三", "is_me": True, "embeddings": [self.me.tolist()]},
+            {"name": "李四", "is_me": False, "embeddings": [self.other.tolist()]},
+        ]
+
+    def test_默认仍返回名字映射_不破坏既有调用(self):
+        m = vp.match_speakers({"SPEAKER_00": near(self.me)}, self.people)
+        self.assertEqual(m["SPEAKER_00"], "张三")
+
+    def test_要分数时返回名字和相似度(self):
+        m = vp.match_speakers({"SPEAKER_00": near(self.me)}, self.people, scores=True)
+        name, score = m["SPEAKER_00"]
+        self.assertEqual(name, "张三")
+        self.assertGreater(score, 0.9)
+        self.assertLessEqual(score, 1.0)
+
+    def test_勉强过线的分数也如实返回(self):
+        """不能因为过了门槛就假装很确定。"""
+        weak = near(self.me, noise=1.15, seed=3)
+        m = vp.match_speakers({"S": weak}, self.people, scores=True, threshold=0.5, margin=0.05)
+        if m:                                   # 造出的向量刚好在门槛附近
+            _, score = m["S"]
+            self.assertLess(score, 0.9, "勉强匹配不该报成高分")
+
+    def test_is_sure_区分几乎确定与勉强够线(self):
+        self.assertTrue(vp.is_sure(0.94))
+        self.assertFalse(vp.is_sure(0.60))
+        self.assertFalse(vp.is_sure(vp.THRESHOLD))
+
+    def test_认不出的仍然不出现(self):
+        m = vp.match_speakers({"S": vec(77)}, self.people, scores=True)
+        self.assertEqual(m, {})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

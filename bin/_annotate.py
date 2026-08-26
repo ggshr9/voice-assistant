@@ -113,11 +113,22 @@ def main(argv):
         return 1
     json_path, out_dir = argv[0], argv[1]
     identified = {}
-    if "--names" in argv:                       # SPEAKER_00=李四,SPEAKER_03=张三
+    if "--names" in argv:              # SPEAKER_00=张三:0.94,SPEAKER_03=李四:0.61
         for pair in argv[argv.index("--names") + 1].split(","):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                identified[k.strip()] = v.strip()
+            if "=" not in pair:
+                continue
+            k, v = pair.split("=", 1)
+            name, sep, score = v.strip().rpartition(":")
+            if sep and name:
+                # 勉强够线的标 [?] —— 与逐字记录的存疑标注同一套约定。
+                # 否则 0.56 和 0.94 在稿子里长得一模一样，没人知道该不该信。
+                try:
+                    name = name if float(score) >= 0.75 else f"{name}[?]"
+                except ValueError:
+                    name = v.strip()
+            else:
+                name = v.strip()
+            identified[k.strip()] = name
     path = write_annotated(json_path, out_dir, identified)
     if path:
         n = len(speaker_names(build_turns(json.load(open(json_path, encoding="utf-8"))

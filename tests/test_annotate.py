@@ -168,6 +168,47 @@ class TestIdentifiedNames(unittest.TestCase):
             self.assertIn("李四：开始吧", text)
             self.assertIn("说话人A：好的", text)
 
+class TestNamesArgParsing(unittest.TestCase):
+    """`--names` 现在带置信度：`SPEAKER_00=张三:0.94`。
+
+    勉强够线的标 `[?]`，与逐字记录的存疑标注同一套约定 —— 否则 0.56 和 0.94
+    在稿子里长得一模一样，读的人没法判断该不该信这个名字。
+    """
+
+    def _run(self, names):
+        import json as _json
+        import subprocess
+        import tempfile
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as d:
+            js = pathlib.Path(d) / "会.json"
+            js.write_text(_json.dumps({"segments": [
+                {"speaker": "SPEAKER_00", "text": "开始吧"},
+                {"speaker": "SPEAKER_01", "text": "好的"},
+                {"speaker": "SPEAKER_02", "text": "收到"}]}, ensure_ascii=False),
+                encoding="utf-8")
+            cmd = ["python3", str(repo / "bin/_annotate.py"), str(js), d]
+            if names:
+                cmd += ["--names", names]
+            subprocess.run(cmd, capture_output=True)
+            return list(pathlib.Path(d).glob("*_annotated.txt"))[0].read_text(encoding="utf-8")
+
+    def test_高置信用干净真名(self):
+        self.assertIn("张三：开始吧", self._run("SPEAKER_00=张三:0.94"))
+
+    def test_勉强够线标问号(self):
+        self.assertIn("李四[?]：好的", self._run("SPEAKER_01=李四:0.61"))
+
+    def test_认不出的仍是匿名牌(self):
+        self.assertIn("说话人A：收到", self._run("SPEAKER_00=张三:0.94,SPEAKER_01=李四:0.61"))
+
+    def test_不带分数时向后兼容(self):
+        """老格式（只有名字）不能因为加了分数就失效。"""
+        self.assertIn("张三：开始吧", self._run("SPEAKER_00=张三"))
+
+    def test_分数是坏值时原样当名字用_不崩(self):
+        self.assertIn("张三:abc：开始吧", self._run("SPEAKER_00=张三:abc"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

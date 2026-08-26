@@ -29,6 +29,16 @@ REGISTRY = os.path.expanduser("~/.config/voiceprints.json")
 
 THRESHOLD = 0.55      # 低于此值一律不认
 MARGIN = 0.15         # 还要比次高的人高出这么多，否则宁可匿名
+SURE = 0.75           # 达到此值才算「几乎确定」；之间的算「勉强够线」，输出里会标出来
+
+
+def is_sure(score):
+    """这个匹配是「几乎确定」还是「勉强够线」。
+
+    实测同人在 0.88~0.94、陌生人 ≤0.19，中间那段空得很 —— 落在 0.55~0.75 的
+    多半是素材太短或状态差异大，值得让人知道，而不是和 0.94 显示成一样。
+    """
+    return float(score) >= SURE
 
 
 def cosine(a, b):
@@ -50,7 +60,7 @@ def best_score(embedding, person):
     return max((cosine(embedding, e) for e in person.get("embeddings") or []), default=0.0)
 
 
-def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN):
+def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN, scores=False):
     """把本场会的说话人映射到已注册的人。
 
     Args:
@@ -59,9 +69,12 @@ def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN):
         threshold: 相似度下限。
         margin: 与次高者的最小差距。
 
+    Args (续):
+        scores: 为 True 时返回 ``{标签: (姓名, 相似度)}``，便于上游标注可信度。
+
     Returns:
-        ``{标签: 姓名}``，只含认得出的。**认不出的标签不会出现在结果里** ——
-        宁可保留匿名牌，也不瞎猜。
+        ``{标签: 姓名}``（或带分数的二元组），只含认得出的。
+        **认不出的标签不会出现在结果里** —— 宁可保留匿名牌，也不瞎猜。
 
     一对一：一个人在一场会里只占一个说话人位（分人器把同一个人切成两簇时，
     只有更像的那个拿到名字），反之一个说话人也只得到一个名字。
@@ -87,7 +100,7 @@ def match_speakers(speakers, people, threshold=THRESHOLD, margin=MARGIN):
     for score, label, name in sorted(scored, reverse=True):
         if label in used_labels or name in used_names:
             continue            # 一对一
-        mapping[label] = name
+        mapping[label] = (name, round(score, 4)) if scores else name
         used_labels.add(label)
         used_names.add(name)
     return mapping
