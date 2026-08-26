@@ -44,6 +44,15 @@ brew install --cask blackhole-2ch
 
 **pyannote 声纹分人（门控模型，必须先手工同意条款）**
 
+> **别被「2」误导**：HF 上有 `speaker-diarization-precision-2`，看着像 community-1 的
+> 下一版，其实是**另一条产品线**——它仓库里只有 `README.md` 和 `config.yaml`、
+> **没有权重**，`pipeline.name` 指向 `pyannoteai.sdk.SDK`，也就是把音频传到
+> pyannote 云上算，要 API key。
+>
+> `speaker-diarization-community-1` 才是当前最新的**本地**版（2025-09-29 更新，
+> 下载 525 万 vs precision-2 的 3.7 万），且已从商业线回移了部分改进。
+> 换 precision-2 等于放弃「音频不出自己的机器」这个前提。
+
 1. 打开 <https://hf.co/pyannote/speaker-diarization-community-1>，登录后点同意
 2. 拿一个有 read 权限的 HF token，写进 shell 配置：`export HF_TOKEN=hf_xxx`
 3. 没有 token 或没同意条款时，`meeting` 会**自动降级为纯转写**，不会报错卡住
