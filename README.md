@@ -354,6 +354,7 @@ uv run tests/test_recall.py            # 检索：目录渲染/抠编号/关键�
 uv run tests/test_mcp.py               # MCP 协议握手/工具分发/错误路径
 uv run tests/test_prompt_drift.py      # prompt 只有一份（两边都不许自存）
 uv run tests/test_voiceprint.py        # 声纹：余弦/门槛/一对一分配/注册表
+uv run tests/test_web_sessions.py      # 服务器侧：路径穿越防护/口令/留存策略/任务表
 uv run --with rumps tests/test_stage_contract.py  # 菜单栏进度与 CLI 的 stage 契约
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）
