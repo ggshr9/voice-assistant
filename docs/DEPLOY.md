@@ -1,7 +1,13 @@
 # 部署
 
-两套完全独立的部署：**本机（Apple Silicon）** 跑 CLI 与菜单栏 App；**GPU 服务器（Linux + CUDA）** 跑网页版。
+两套完全独立的部署：**本机（macOS + Apple Silicon）** 跑 CLI 与菜单栏 App；
+**GPU 服务器（Linux + NVIDIA）** 跑网页版。
 两边只共享 `prompts.py` 和 `_voiceprint.py`（由 `sync-web` 从仓库推过去），其余各管各的。
+
+> **只想让一群人（各种系统）能用，就只部署服务器版。** 部署平台是 Linux+NVIDIA，
+> 但使用端是浏览器 —— Windows / macOS / Linux / 手机都行，团队里不必人人有 Mac。
+> 上传音频出纪要在任何浏览器上都能用；只有「共享标签页声音做实时字幕」需要
+> 桌面版 Chrome / Edge（Safari 与移动端拿不到标签页音频）。
 
 ---
 

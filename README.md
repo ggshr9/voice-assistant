@@ -3,18 +3,27 @@
 录音 → ASR → 声纹分人 → LLM → 结构化纪要，加上自然语言检索和 MCP 接口。
 音频处理全程本地，不上传给任何第三方。
 
-**两个独立实现，各自锁定一个平台** —— 按你手上的机器选，不必两个都有：
+**两个独立实现**，按你手上的机器选，不必两个都有：
 
-| | 平台 | 形态 | 用什么 |
+| | 部署在哪 | 谁能用 | 用什么跑 |
 |---|---|---|---|
-| **本机版** | macOS + Apple Silicon | CLI + 菜单栏 App + MCP | MLX（`mlx-qwen3-asr` / `vllm-mlx`） |
-| **服务器版** | Linux + NVIDIA | 网页（浏览器录音/上传） | CUDA（`faster-whisper` + `pyannote`） |
+| **本机版** | macOS + Apple Silicon | 就这台机器（CLI / 菜单栏 / MCP） | MLX（`mlx-qwen3-asr` + `vllm-mlx`） |
+| **服务器版** | Linux + NVIDIA | **任何系统，开浏览器就行** | CUDA（`faster-whisper` + `pyannote`） |
 
-服务器版**能独立闭环**：上传音频 → 转写 → 分人 → 声纹识别 → 纪要，全在 Linux 上跑完，
-不需要 Mac。两边共享 `prompts.py`（纪要 prompt）和 `_voiceprint.py`（声纹逻辑）。
+**部署平台和使用平台是两回事** —— 服务器版只需要一台 Linux GPU 机器，
+之后 Windows / macOS / Linux / 手机都能用，团队里不必人人有 Mac。
+它**独立闭环**：上传音频 → 转写 → 分人 → 声纹识别 → 纪要，全在服务器上跑完。
 
-> ⚠️ 本机版的平台锁定是硬的：MLX 是苹果的框架，录音走 avfoundation，
-> 菜单栏靠 rumps/AppKit —— 这些在 Linux/Windows 上都没有对应物。
+| 网页端怎么用 | 支持范围 |
+|---|---|
+| 上传音频 → 出纪要 | ✅ 任何系统任何浏览器，**含手机** |
+| 麦克风录音 | ✅ 所有现代浏览器 |
+| 共享标签页声音 → 实时字幕 | ⚠️ 桌面版 Chrome / Edge（Safari 与移动端拿不到标签页音频） |
+
+两边共享 `prompts.py`（纪要 prompt）和 `_voiceprint.py`（声纹逻辑）。
+
+> ⚠️ **只有本机版**锁死 Apple Silicon：MLX 是苹果的框架，录音走 avfoundation，
+> 菜单栏靠 rumps/AppKit —— Linux/Windows 上没有对应物。想在别的系统上用，走服务器版。
 
 **LLM 那一步可换**：默认用本机大脑（Qwen3.6-35B-8bit，需 64GB 内存），
 也可以把 `CAPTION_LLM_URL` 指向任何 OpenAI 兼容端点（OpenAI / DeepSeek / Ollama / vLLM）。
@@ -27,7 +36,7 @@
 | **CLI** | macOS | `bin/` | 主力。`rec` 录音 → `meeting` 转写分人 → `minutes` 出纪要 → `recall` 检索 |
 | **菜单栏 App** | macOS | `meeting_app.py` | 顶栏 🎙️ 图标，点两下出纪要。只是壳，内部仍调 CLI |
 | **MCP** | macOS | `bin/meetings_mcp.py` | 让 agent（Claude Code 等）直接查会议档案，4 个工具 |
-| **网页版** | Linux + NVIDIA | `web/` | 浏览器共享标签页声音 → 实时字幕；上传音频 → 会议纪要。**独立闭环，不依赖 Mac** |
+| **网页版** | 部署 Linux+NVIDIA，**使用不限系统** | `web/` | 浏览器录音/上传 → 纪要；共享标签页声音 → 实时字幕。独立闭环，不依赖 Mac |
 
 ## 快速开始
 
