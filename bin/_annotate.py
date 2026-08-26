@@ -22,6 +22,9 @@ import re
 import string
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _atomicio import atomic_write  # noqa: E402
+
 _LATIN = re.compile(r"[A-Za-z0-9]")
 # 「不需要词间空格」的东方文字。按 Unicode 区段列，别只写汉字 ——
 # 早先只有 汉字 + 中文标点 + 全角，于是日文假名和韩文谚文后面会被插进一个空格
@@ -121,8 +124,7 @@ def write_annotated(json_path, out_dir, identified=None):
 
     base = os.path.splitext(os.path.basename(json_path))[0]
     path = os.path.join(out_dir, base + "_annotated.txt")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(f"{names[spk]}：{txt}" for spk, txt in turns) + "\n")
+    atomic_write(path, "\n".join(f"{names[spk]}：{txt}" for spk, txt in turns) + "\n")
     return path
 
 

@@ -24,7 +24,9 @@ import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
 # 纪要 prompt 与服务器网页版共用同一份(仓库根 prompts.py),别在这里另存一份 ——
 # 两边曾各存各的,实测 FINAL_SYS 已漂移到只剩 66% 相似。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, me_instruction
+from _atomicio import atomic_write
 
 API = "http://127.0.0.1:8080/v1/chat/completions"
 HEALTH = "http://127.0.0.1:8080/v1/models"
@@ -263,8 +265,9 @@ def _prepend_frontmatter(md_path, out_dir):
             body = f.read()
         if body.startswith("---\n"):
             return                              # 已经有了(重跑时)
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(idx.render_frontmatter(entry) + "\n" + body)
+        # 这里最要命:body 是【已经生成好的纪要】,花了 LLM 时间才有的。
+        # 从前直接 open(md_path,"w") 截断重写,死在中间那份纪要就没了。
+        atomic_write(md_path, idx.render_frontmatter(entry) + "\n" + body)
     except Exception as e:
         log(f"（frontmatter 跳过：{type(e).__name__}: {e}）")
 
@@ -359,8 +362,8 @@ def main():
     out = os.path.join(base_dir, f"纪要_{name}.md")
 
     header = f"# 会议纪要 · {name}\n\n> 来源转写：`{src}`　|　生成：本地 Qwen3.6（vllm-mlx）\n\n"
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(header + md + "\n")
+    # 半截的纪要看起来跟完整的一样 —— 用户读到一半不会知道被截断了
+    atomic_write(out, header + md + "\n")
     log("@@STAGE done")
     log("✅ 纪要已生成:")
     print(out)
@@ -373,8 +376,7 @@ def main():
         rec_out = os.path.join(base_dir, f"会议记录_{name}.md")
         rec_header = (f"# 会议记录 · {name}\n\n> 来源转写：`{src}`　|　"
                       f"忠实还原：本地 Qwen3.6（`[?…]` 为存疑标注，待人工确认）\n\n")
-        with open(rec_out, "w", encoding="utf-8") as f:
-            f.write(rec_header + record + "\n")
+        atomic_write(rec_out, rec_header + record + "\n")
         log("✅ 会议记录已生成:")
         print(rec_out)
 

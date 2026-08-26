@@ -24,6 +24,9 @@ import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _atomicio import atomic_write  # noqa: E402
 from datetime import datetime
 
 ROOT = os.path.expanduser("~/会议录音")
@@ -274,36 +277,6 @@ def load(root=ROOT):
             f"  修复：`_index.py rebuild` 会扫 转写_* 目录重建。") from e
 
 
-def _atomic_write(path, text):
-    """先写同目录的 .tmp 再 os.replace —— 中途挂掉不会留下半截文件。
-
-    从前是直接 open(path,"w"),而那一刻文件就被截断了。实测在 json.dump 中途
-    模拟 Ctrl+C:索引从 11778 字节变成 28 字节,全部会议元数据当场蒸发。
-    (同一类错误也让录音的 m4a 报废过 —— 截断在先、内容在后。)
-    """
-    d = os.path.dirname(path) or "."
-    # mkstemp 一律建成 0600 —— 直接 replace 会把原文件权限悄悄改掉。
-    # 保留原权限;新文件用 0644(索引.md 是给人看的渲染稿)。
-    try:
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        mode = 0o644
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())                   # 断电也不留半截
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)                      # 同一文件系统上是原子的
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
 def save(entries, root=ROOT):
     jf, mf = index_paths(root)
     os.makedirs(root, exist_ok=True)
@@ -314,8 +287,8 @@ def save(entries, root=ROOT):
             shutil.copy2(jf, jf + ".bak")
         except OSError:
             pass
-    _atomic_write(jf, payload)
-    _atomic_write(mf, render_markdown(entries))
+    atomic_write(jf, payload)
+    atomic_write(mf, render_markdown(entries))
     return jf, mf
 
 

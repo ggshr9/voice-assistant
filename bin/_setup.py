@@ -8,8 +8,12 @@ pyannote 条款没同意会静默降级成纯转写、音频设备名差一个�
 
 CLI 在 `bin/setup`，这里只放不碰 IO 的部分，好测。
 """
+import sys
 import os
 import re
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _atomicio import atomic_write  # noqa: E402
 
 CONFIG = os.path.expanduser("~/.config/voice-assistant.env")
 MODELS = os.path.expanduser("~/models")
@@ -91,9 +95,9 @@ def write_env(values, path=CONFIG):
     for k, v in values.items():
         escaped = str(v).replace('"', '\\"')
         lines.append(f'export {k}="{escaped}"')
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.chmod(path, 0o600)
+    # 显式传 0o600:里面有 HF_TOKEN。从前是"写完再 chmod",那之间有一小段时间
+    # 文件按 umask(通常 644)敞着 —— token 就那样躺在那里。
+    atomic_write(path, "\n".join(lines) + "\n", mode=0o600)
     return path
 
 
