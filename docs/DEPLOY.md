@@ -290,3 +290,23 @@ set -a; . ~/voice-svc/web/secrets.env; . ~/voice-svc/hf.env; set +a
 - `~/voice-svc/voiceprints.json`（声纹，可从本机重推）
 
 本机侧：`~/.config/caption.env`、`~/.config/voiceprints.json`、`~/会议录音/`。
+
+---
+
+## 勘误
+
+**关于「pyannote 过分割」（2026-08-25 更正）**
+
+早期 commit（`5f9f97d` 及其 README 措辞）声称 pyannote 在多人会议上会把同一个人
+拆成多簇，并引用了「标称 8 人的会里两两相似度有 4 对在 0.88~0.93」作为证据。
+
+**那个现象是我们自己造成的** —— 那次跑的是 `meeting xxx.wav 8`，强制指定了 8 人。
+同一段音频、同一模型、同一台机器的对照：
+
+| | 说话人数 | 最大簇间相似度 | >0.8 的对数 |
+|---|---|---|---|
+| 不指定人数（自动） | 2 | 0.212 | 0 |
+| 强制 8 人 | 8 | 0.927 | 7 |
+
+pyannote 自动判断是准的。**使用建议：不确定几个人就别传那个参数。**
+`merge_clusters` 保留为兜底但默认关闭。
