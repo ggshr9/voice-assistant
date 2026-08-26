@@ -134,6 +134,35 @@ def test_translate_does_not_swallow_other_http_errors():
         urllib.request.urlopen = orig
 
 
+def test_segment_forces_cut_when_too_long():
+    """连续说话不停顿时，必须有个时长上限强制断开。
+
+    caption 的参数是为逐句字幕调的（停 0.8 秒才算一句）。会议里有人一口气说两分钟
+    很常见 —— 实测拿真实会议音频跑，VAD 切出了 130 秒一整段。
+    录音时要靠它给反馈，等 130 秒等于没有反馈。
+    """
+    frames = [_tone_frame() for _ in range(400)]      # 12 秒不间断语音
+    segs = list(cc.segment_frames(iter(frames), _AlwaysSpeech(), max_speech=3.0))
+    assert len(segs) >= 3, f"12 秒连续语音、上限 3 秒，应切出 ≥3 段，实际 {len(segs)}"
+    for s in segs:
+        secs = len(s) / 2 / 16000
+        assert secs <= 4.0, f"有段落 {secs:.1f}s 超过上限太多"
+
+
+def test_segment_unlimited_by_default():
+    """不传 max_speech 时行为不变 —— caption 那条路依赖原有的按停顿切。"""
+    frames = [_tone_frame() for _ in range(200)]      # 6 秒不间断
+    segs = list(cc.segment_frames(iter(frames), _AlwaysSpeech()))
+    assert len(segs) <= 1, "默认不该因为长度而切断"
+
+
+class _AlwaysSpeech:
+    """把每一帧都判成语音的假 VAD —— 用来构造「一直说不停」。"""
+
+    def is_speech(self, frame, sample_rate):
+        return True
+
+
 if __name__ == "__main__":
     test_segment_splits_on_silence()
     test_segment_drops_too_short()
@@ -141,6 +170,8 @@ if __name__ == "__main__":
     test_translate_passthrough_zh()
     test_translate_disables_thinking()
     test_translate_still_strips_think_tags()
+    test_segment_forces_cut_when_too_long()
+    test_segment_unlimited_by_default()
     test_translate_falls_back_when_vendor_field_rejected()
     test_translate_does_not_swallow_other_http_errors()
     print("OK")

@@ -27,9 +27,16 @@ def _require(url, env_name):
 
 
 def segment_frames(frames, vad, sample_rate=SAMPLE_RATE, frame_ms=FRAME_MS,
-                   silence_tail=0.8, min_speech=0.4):
+                   silence_tail=0.8, min_speech=0.4, max_speech=None):
     """输入 30ms int16 PCM 帧迭代器,按停顿切句,产出每段拼接 PCM bytes(丢弃过短段)。
-    时长门限只算【语音帧】(不含末尾静音);产出时裁掉末尾静音、留 ~150ms 自然收尾。"""
+
+    时长门限只算【语音帧】(不含末尾静音);产出时裁掉末尾静音、留 ~150ms 自然收尾。
+
+    Args:
+        max_speech: 单段语音的秒数上限;超了就地断开,不等停顿。默认 None=不限。
+            字幕场景按停顿切就够(默认参数就是为它调的);但会议里有人一口气说两分钟
+            很常见 —— 实测真实会议音频切出过 130 秒一整段,靠它给录音反馈就等于没反馈。
+    """
     pad = 5
     buf, triggered, silence, nspeech, last_speech = [], False, 0.0, 0, -1
 
@@ -49,6 +56,11 @@ def segment_frames(frames, vad, sample_rate=SAMPLE_RATE, frame_ms=FRAME_MS,
             buf.append(chunk)
             if speech:
                 silence = 0.0; nspeech += 1; last_speech = len(buf) - 1
+                if max_speech and nspeech * frame_ms / 1000 >= max_speech:
+                    seg = _emit()           # 说太久了,就地断开
+                    if seg is not None:
+                        yield seg
+                    buf, triggered, silence, nspeech, last_speech = [], False, 0.0, 0, -1
             else:
                 silence += frame_ms / 1000
                 if silence >= silence_tail:

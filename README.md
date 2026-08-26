@@ -92,7 +92,15 @@ deadline 是下周一，且会上明确「不再顺延」。
 相关原话：「好，那 deadline 就按下周一算。」
 ```
 
-**⑤ 安装自检**
+**⑤ 录音时的实时反馈** —— 证明「在录，而且 ASR 听得懂」
+
+```
+🔴 12:34  ▅▅▅▅▅▁▁▁  -20dB  …接口这块我周三能给到测试环境…
+```
+
+连续几段转不出内容会提示「检查是否真的录到了声音」—— 防的是开完两小时才发现没录上。
+
+**⑥ 安装自检**
 
 ```
 $ setup
@@ -106,7 +114,7 @@ $ setup
 可以用了。
 ```
 
-**⑥ 实时字幕** —— 底部双语浮窗，点击穿透、不抢焦点
+**⑦ 实时字幕** —— 底部双语浮窗，点击穿透、不抢焦点
 
 ```
   The users with more reliable transaction history can get a higher limit.
@@ -178,6 +186,7 @@ recall "上次接口联调的 deadline 是哪天"   # 自然语言检索
 
 ### CLI（`bin/`）· macOS
 - `rec` — 录音。`rec` 录麦克风，`rec online` 录聚合设备（线上会议：对方+自己）
+  - **录音时有实时反馈**：电平表 + 滚动转写。`rec --quiet` 只留电平表
   - 持续静音 5 分钟自动停（`REC_SILENCE_SEC=0` 关闭、`REC_SILENCE_DB` 调灵敏度）。会后忘了停录会让 ASR 把静音幻觉成一长串「嗯」
 - `meeting <文件> [说话人数|-] [nominutes] [--me 说话人N]` — 转写（mlx-qwen3-asr / Qwen3-ASR-1.7B-8bit）+ pyannote 声纹分人（走 GPU）+ 自动调 `minutes`
   - 内部两个小模块：`bin/_asr_mps.py`（把分人搬到 MPS，快 26.7 倍）、`bin/_annotate.py`（词级 segment → 说话人标注稿）
@@ -355,6 +364,7 @@ uv run tests/test_mcp.py               # MCP 协议握手/工具分发/错误路
 uv run tests/test_prompt_drift.py      # prompt 只有一份（两边都不许自存）
 uv run tests/test_voiceprint.py        # 声纹：余弦/门槛/一对一分配/注册表
 uv run tests/test_web_sessions.py      # 服务器侧：路径穿越防护/口令/留存策略/任务表
+uv run tests/test_live_asr.py          # 录音实时反馈：电平换算/条形渲染/空白告警
 uv run --with rumps tests/test_stage_contract.py  # 菜单栏进度与 CLI 的 stage 契约
 uv run tests/test_asr_mps.py           # 分人走 GPU 的 shim（假模块，不需 torch）
 bash   tests/test_rec.sh                # 录音分支（桩 ffmpeg，不需音频设备）

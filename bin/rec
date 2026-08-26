@@ -42,6 +42,19 @@ fi
 SILENCE_SEC="${REC_SILENCE_SEC:-300}"
 SILENCE_DB="${REC_SILENCE_DB:--35}"
 
+# 实时反馈：电平表 + 抽样转写。默认开 —— 它要防的是「开完两小时才发现没录上」,
+# 而那种时候你根本不会记得加参数。--quiet 只留电平表(不加载模型)。
+LIVE_ARGS=""
+for a in "$@"; do [ "$a" = "--quiet" ] && LIVE_ARGS="--no-asr"; done
+# realpath 解软链 —— rec 是从 ~/.local/bin 软链调用的,不解就找不到同目录的兄弟脚本
+REC_DIR="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")" && pwd)"
+LIVE="$REC_DIR/_live_asr.py"
+# 用 uv run 拉齐依赖:mlx-qwen3-asr 那个 venv 里没有 webrtcvad,
+# 直接用它的 python 会静默降级成"只有电平表"(踩过)。uv 有缓存,启动开销可忽略。
+LIVE_RUN=(uv run --quiet --with webrtcvad --with "setuptools<81" --with numpy \
+          --with mlx-qwen3-asr python)
+command -v uv >/dev/null || LIVE_RUN=(python3)
+
 echo "🔴 开始录制（设备：$DEV）→ $OUT"
 if [ "$SILENCE_SEC" = "0" ]; then
   echo "   说话/开会，结束按 Ctrl+C 停止...（静音自动停：已关闭）"
@@ -50,12 +63,19 @@ else
   echo "   说话/开会，结束按 Ctrl+C 停止...（持续静音 ${SILENCE_SEC}s 也会自动停）"
   LOG="$(mktemp -t rec-silence)"
   # silencedetect 只做检测、原样透传音频；d= 即「连续静音多久才算一次」
+  # 用 FIFO 而不是管道:`a | b &` 时 $! / jobs -p 拿到的是【管道最后一个进程】,
+  # 也就是转写器 —— 静音自停会杀错对象,ffmpeg 继续录,整个挂住(踩过)。
+  FIFO="$(mktemp -u -t rec-pcm)"; mkfifo "$FIFO"
+  "${LIVE_RUN[@]}" "$LIVE" $LIVE_ARGS < "$FIFO" &
+  LIVEPID=$!
+  # 一路存 m4a、一路把 PCM 送进 FIFO。silencedetect 只做检测、原样透传。
   "$FFMPEG" -f avfoundation -i ":$DEV" -ac 1 -ar 16000 \
          -af "silencedetect=noise=${SILENCE_DB}dB:d=${SILENCE_SEC}" \
-         -c:a aac "$OUT" > /dev/null 2> "$LOG" &
+         -c:a aac "$OUT" \
+         -f s16le -ac 1 -ar 16000 pipe:1 > "$FIFO" 2> "$LOG" &
   FFPID=$!
   # Ctrl+C 要转发给 ffmpeg，让它正常收尾写完 moov（否则 m4a 损坏）
-  trap 'kill -INT "$FFPID" 2>/dev/null' INT TERM
+  trap 'kill -INT "$FFPID" 2>/dev/null; kill "$LIVEPID" 2>/dev/null' INT TERM
   while kill -0 "$FFPID" 2>/dev/null; do
     if grep -q "silence_start" "$LOG" 2>/dev/null; then
       echo ""
@@ -66,8 +86,10 @@ else
     sleep 2
   done
   wait "$FFPID" 2>/dev/null
+  kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null
   trap - INT TERM
-  rm -f "$LOG"
+  rm -f "$LOG" "$FIFO"
+  echo ""
 fi
 
 echo ""
