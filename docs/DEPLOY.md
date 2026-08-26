@@ -310,3 +310,36 @@ set -a; . ~/voice-svc/web/secrets.env; . ~/voice-svc/hf.env; set +a
 
 pyannote 自动判断是准的。**使用建议：不确定几个人就别传那个参数。**
 `merge_clusters` 保留为兜底但默认关闭。
+
+---
+
+## 分人器选型：为什么留在 pyannote（2026-08-26 实测）
+
+DiariZen（BUT-FIT，2025）在公开榜单上 DER 明显优于 pyannote 3.1，所以实测了一轮。
+**同一台服务器、同一段 265 秒双人音频**：
+
+| | pyannote community-1 | DiariZen (wavlm-large-s80-md) |
+|---|---|---|
+| 判定说话人数 | **2** | **3**（多出一个只说 1 秒的簇） |
+| 主说话人时长 | 141s / 78s | 147s / 76s（两者一致） |
+| 分人耗时 | **2.8s** | 5.4s |
+| 模型加载 | ~2s | 3.2s |
+| 模型体积 | 32M + 25M | 266M |
+| 运行环境 | 复用 ASR 的 venv | **独立 venv 5.3G**（torch 2.1.1+cu121） |
+| 默认参数 | 开箱可用 | `batch_size=32` 直接 OOM，要手工调到 4 |
+| 设备选择 | 可 `.to(device)` | `pipelines/inference.py:57` **写死 `cuda:0`**，只能靠 `CUDA_VISIBLE_DEVICES` 绕开 |
+| Apple Silicon | ✅ MPS 已跑通（比 CPU 快 26.7×） | ❌ 未验证，且依赖 CUDA 版 torch |
+
+**结论：不换。** 理由不是 DiariZen 差，是换的代价远大于收益 ——
+
+1. 声纹库要全部重建（embedding 模型不同，历史注册全部作废）
+2. Mac 那半边大概率跑不了（CUDA 依赖）→ 两个平台用不同分人器 → 声纹不通用
+3. 部署重量级差一个数量级，而本项目最看重「本地、轻」
+4. 那个 1 秒的幽灵簇恰好是 `web/` 侧 `_collapse` 安全网在处理的东西 —— 换过去同样要打补丁
+
+**这个结论的适用范围有限（n=1，且是双人音频）**：DiariZen 的宣称优势区间是 5 人以上，
+这次没有测到它擅长的场景。准确说法是「在少数人、追求轻量的场景 pyannote 更优」，
+**不是**「DiariZen 不如 pyannote」。
+
+环境保留在服务器 `~/voice-svc/DiariZen/`，将来真遇到多人场景可直接复测。
+复现脚本见该目录，跑的时候记得 `CUDA_VISIBLE_DEVICES` 避开在用的卡。

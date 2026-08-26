@@ -252,6 +252,10 @@ who enroll ~/会议录音/降噪_我的声音.wav 张三 --me
 > pyannote 自动判断是准的，硬塞人数会逼它把一个人劈开。
 > **不确定几个人就别传那个参数。**
 
+> 📊 **为什么不换更新的 DiariZen**：同机同音频实测，pyannote 判 2 人 / 2.8s，
+> DiariZen 判 3 人（多一个 1 秒幽灵簇）/ 5.4s，且要独立 5.3G venv、写死 `cuda:0`、
+> 默认 batch 直接 OOM。完整对比与适用范围见 [`docs/DEPLOY.md`](docs/DEPLOY.md#分人器选型为什么留在-pyannote2026-08-26-实测)。
+
 网页版（服务器）也认：`asr_diarize_step.py` 在分人那一次调用里取向量比对，单声道/上传路径生效（双声道线上会议本来就按声道知道谁是「我」）。
 
 ⚠️ 声纹是生物特征，`~/.config/voiceprints.json`（权限 600）**不进 git** —— 代码要可追溯、这类数据要可删除，生命周期相反。
