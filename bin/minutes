@@ -244,6 +244,31 @@ def auto_me(text):
     return None
 
 
+def _prepend_frontmatter(md_path, out_dir):
+    """给刚写好的纪要贴上 YAML frontmatter。
+
+    结构化信息原本只在 索引.json 里 —— 同一份事实存两处会不同步。
+    失败一律吞掉:frontmatter 是锦上添花,不该让纪要本身写不出来。
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+        import _index as idx
+        entry = idx.scan_dir(out_dir)
+        if not entry:
+            return
+        registered = next((e for e in idx.load() if e.get("id") == entry.get("id")), None)
+        if registered and registered.get("title"):
+            entry["title"] = registered["title"]     # 用登记时 LLM 起的标题
+        with open(md_path, encoding="utf-8") as f:
+            body = f.read()
+        if body.startswith("---\n"):
+            return                              # 已经有了(重跑时)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(idx.render_frontmatter(entry) + "\n" + body)
+    except Exception as e:
+        log(f"（frontmatter 跳过：{type(e).__name__}: {e}）")
+
+
 def register_index(out_dir, title=None):
     """纪要写完后登记进 ~/会议录音/索引.json —— 让 recall 能找到这场会。
 
@@ -353,6 +378,10 @@ def main():
     # 登记进索引，让 recall 能检索到这场会（放在会议记录之后，字段才齐）
     if "--noindex" not in flags:
         register_index(base_dir)
+
+    # frontmatter 必须在登记【之后】贴：标题是登记时让 LLM 起的，
+    # 先贴的话 title 会是 derive_title 的截断摘要，跟索引里对不上。
+    _prepend_frontmatter(out, base_dir)
 
     if "--say" in flags:
         say_summary(md)

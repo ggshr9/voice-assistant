@@ -37,6 +37,10 @@ def parse_minutes(md):
     Returns:
         dict: ``summary``(一句话摘要)、``todos``(待办条数)、``mine``(其中标了「我」的)。
     """
+    if md.startswith("---\n"):              # 有 frontmatter 就先剥掉，别把它当正文
+        end = md.find("\n---", 4)
+        if end >= 0:
+            md = md[end + 4:]
     summary = ""
     m = re.search(r"##\s*一句话摘要\s*\n+(.+?)(?=\n\s*##|\Z)", md, re.S)
     if m:
@@ -118,6 +122,59 @@ def format_duration(seconds):
         return "—"
     h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+_FM_FIELDS = [
+    ("id", "id"), ("title", "title"), ("date", "date"),
+    ("duration", None), ("speakers", "speakers"),
+    ("todos", "todos"), ("my_todos", "mine"), ("summary", "summary"),
+]
+
+
+def _yaml_value(v):
+    """YAML 标量：含冒号/引号/井号时必须加引号，否则解析会断在中间。"""
+    s = str(v)
+    if any(c in s for c in ':#"\'\n') or s.strip() != s:
+        return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return s
+
+
+def render_frontmatter(entry):
+    """把索引条目渲染成 YAML frontmatter，贴在纪要 .md 最前面。
+
+    **为什么要有**：结构化信息原本只在 索引.json 里，同一份事实存两处会不同步 ——
+    手工改了纪要、或把 .md 拷到别处，元数据就对不上了。带上 frontmatter 之后
+    单个文件自己就说得清自己是什么，json 退回成"检索用的聚合索引"。
+
+    空值不输出：`speakers: 0` 会让人以为真的 0 个人说话，不如不写。
+    """
+    lines = ["---"]
+    for key, src in _FM_FIELDS:
+        v = format_duration(entry.get("duration_sec")) if key == "duration" else entry.get(src)
+        if v in (None, "", 0, "—"):
+            continue
+        lines.append(f"{key}: {_yaml_value(v)}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def parse_frontmatter(text):
+    """从 .md 里读回 frontmatter；没有就返回空 dict。值一律当字符串。"""
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end < 0:
+        return {}
+    out = {}
+    for line in text[4:end].splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            v = v[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+        out[k.strip()] = v
+    return out
 
 
 def upsert(entries, entry):

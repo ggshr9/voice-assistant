@@ -170,6 +170,55 @@ class TestFormatDuration(unittest.TestCase):
     def test_未知时长(self):
         self.assertEqual(meetindex.format_duration(0), "—")
 
+class TestFrontmatter(unittest.TestCase):
+    """纪要 .md 自带 YAML frontmatter，文件本身就机器可读。
+
+    在此之前结构化信息只在 索引.json 里 —— 同一份事实存两处，会不同步：
+    手工改了纪要、或者把 .md 拷到别处，元数据就对不上了。
+    成熟项目（minutes）把 attendees/decisions/action items 放进 frontmatter，
+    我们照这个来：json 仍是检索用的聚合索引，但单个文件不再依赖它才能被读懂。
+    """
+
+    def test_渲染出合法的frontmatter(self):
+        fm = meetindex.render_frontmatter({
+            "id": "会议_20260825_1030", "title": "接口联调排期",
+            "date": "2026-08-25 10:30", "duration_sec": 6483,
+            "speakers": 3, "todos": 5, "mine": 2,
+            "summary": "确认联调排期与测试环境交付。",
+        })
+        self.assertTrue(fm.startswith("---\n"))
+        self.assertIn("\n---\n", fm[4:])
+        self.assertIn("title: 接口联调排期", fm)
+        self.assertIn('duration: "1:48:03"', fm)   # 含半角冒号，必须加引号
+        self.assertIn("speakers: 3", fm)
+
+    def test_半角冒号要加引号_否则yaml会断(self):
+        """全角「：」不是 YAML 分隔符，不用加引号；半角 `:` 才会把值截断。"""
+        fm = meetindex.render_frontmatter({"id": "x", "title": "进度: 第二阶段", "summary": ""})
+        self.assertIn('title: "进度: 第二阶段"', fm)
+        plain = meetindex.render_frontmatter({"id": "x", "title": "进度：第二阶段", "summary": ""})
+        self.assertIn("title: 进度：第二阶段", plain)
+
+    def test_含引号的值被转义(self):
+        fm = meetindex.render_frontmatter({"id": "x", "title": '他说"好"', "summary": ""})
+        self.assertIn('\\"', fm)
+
+    def test_能被解析回来(self):
+        entry = {"id": "会议_1", "title": "标题", "date": "2026-08-25 10:30",
+                 "duration_sec": 125, "speakers": 2, "todos": 1, "mine": 1,
+                 "summary": "摘要。"}
+        got = meetindex.parse_frontmatter(meetindex.render_frontmatter(entry) + "# 正文\n")
+        self.assertEqual(got["title"], "标题")
+        self.assertEqual(got["speakers"], "2")
+
+    def test_没有frontmatter的老文件返回空(self):
+        self.assertEqual(meetindex.parse_frontmatter("# 会议纪要\n\n正文"), {})
+
+    def test_空值不写进去(self):
+        """说话人数为 0 时不该输出 `speakers: 0`，那会让人以为真的 0 个人说话。"""
+        fm = meetindex.render_frontmatter({"id": "x", "title": "t", "speakers": 0, "summary": ""})
+        self.assertNotIn("speakers:", fm)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
