@@ -15,8 +15,8 @@ recall = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(recall)
 
 ENTRIES = [
-    {"id": "a", "date": "2026-06-19 23:01", "title": "目标用户业务数据",
-     "summary": "讨论某地区目标用户的业务数据获取难题。"},
+    {"id": "a", "date": "2026-06-19 23:01", "title": "接口联调排期",
+     "summary": "讨论接口联调的排期与测试环境交付。"},
     {"id": "b", "date": "2026-06-12 22:34", "title": "声音克隆测试",
      "summary": "测试声音克隆技术的音色复刻。"},
 ]
@@ -26,7 +26,7 @@ class TestCatalog(unittest.TestCase):
     def test_每场会一行且带编号(self):
         out = recall.format_catalog(ENTRIES)
         self.assertEqual(len(out.splitlines()), 2)
-        self.assertTrue(out.startswith("1. [2026-06-19 23:01] 目标用户业务数据"))
+        self.assertTrue(out.startswith("1. [2026-06-19 23:01] 接口联调排期"))
 
     def test_没摘要也不崩(self):
         out = recall.format_catalog([{"id": "x", "title": "t"}])
@@ -58,7 +58,7 @@ class TestParsePicks(unittest.TestCase):
 
 class TestKeywordFallback(unittest.TestCase):
     def test_按字面重合挑出正确的会(self):
-        picks = recall.keyword_fallback("业务数据怎么搞", ENTRIES, limit=1)
+        picks = recall.keyword_fallback("联调排期怎么定", ENTRIES, limit=1)
         self.assertEqual(picks, [0])
 
     def test_完全不相关时返回空(self):

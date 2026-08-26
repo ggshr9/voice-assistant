@@ -23,7 +23,7 @@ MINUTES_MD = """# 会议纪要 · 线上会议_20260619_2301
 > 来源转写：`x_annotated.txt`
 
 ## 一句话摘要
-会议演示了基于某通讯平台的注册流程，并讨论了某地区目标用户的业务数据难题。
+演示了新版注册流程，并讨论了接口联调的排期与测试环境交付。
 
 ## 关键决议
 - 甲
@@ -44,7 +44,7 @@ MINUTES_MD = """# 会议纪要 · 线上会议_20260619_2301
 class TestParseMinutes(unittest.TestCase):
     def test_取出一句话摘要(self):
         got = meetindex.parse_minutes(MINUTES_MD)
-        self.assertTrue(got["summary"].startswith("会议演示了基于某通讯平台"))
+        self.assertTrue(got["summary"].startswith("演示了新版注册流程"))
         self.assertNotIn("##", got["summary"])
 
     def test_数待办条数_不把表头算进去(self):
@@ -61,9 +61,9 @@ class TestParseMinutes(unittest.TestCase):
 
 class TestDeriveTitle(unittest.TestCase):
     def test_从摘要切出短标题(self):
-        t = meetindex.derive_title("会议演示了基于某通讯平台的注册流程，并讨论了联调难题。", limit=20)
+        t = meetindex.derive_title("演示了新版注册流程，并讨论了联调排期难题。", limit=20)
         self.assertLessEqual(len(t), 20)
-        self.assertTrue(t.startswith("会议演示了"))
+        self.assertTrue(t.startswith("演示了新版"))
         self.assertNotIn("。", t)
 
     def test_摘要为空时回退到会议标识(self):
@@ -78,7 +78,7 @@ class TestLLMTitle(unittest.TestCase):
     """标题交给 LLM 起,derive_title 只是没大脑时的兜底。
 
     截断摘要当标题的效果很差 —— 回填时真实产出是
-    「会议演示了基于某通讯平台的新用户注册及小组」这种半截话。
+    「演示了新版注册流程并讨论了接口」这种半截话。
     """
 
     def test_用llm起标题并清掉多余包装(self):
@@ -138,7 +138,7 @@ class TestRender(unittest.TestCase):
         entries = [{
             "id": "线上会议_20260619_2301", "title": "接口联调排期",
             "date": "2026-06-19 23:01", "duration_sec": 6483, "speakers": 8,
-            "todos": 5, "mine": 2, "summary": "讨论了业务数据难题。",
+            "todos": 5, "mine": 2, "summary": "讨论了联调排期与环境交付。",
             "dir": "/x/转写_线上会议_20260619_2301",
         }]
         md = meetindex.render_markdown(entries)
@@ -146,7 +146,7 @@ class TestRender(unittest.TestCase):
         self.assertIn("2026-06-19 23:01", md)
         self.assertIn("1:48:03", md)       # 6483 秒
         self.assertIn("8", md)
-        self.assertIn("讨论了业务数据难题。", md)
+        self.assertIn("讨论了联调排期与环境交付。", md)
 
     def test_空索引也能渲染(self):
         self.assertIn("暂无", meetindex.render_markdown([]))

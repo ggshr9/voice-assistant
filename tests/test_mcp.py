@@ -16,9 +16,9 @@ mcp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mcp)
 
 ENTRIES = [
-    {"id": "线上会议_20260619_2301", "title": "目标用户联调", "date": "2026-06-19 23:01",
+    {"id": "线上会议_20260619_2301", "title": "接口联调排期", "date": "2026-06-19 23:01",
      "duration_sec": 6483, "speakers": 8, "todos": 5, "mine": 2,
-     "summary": "讨论业务数据难题。", "dir": "/x", "files": {"minutes": "纪要_x.md"}},
+     "summary": "讨论联调排期。", "dir": "/x", "files": {"minutes": "纪要_x.md"}},
     {"id": "会议_20260612_2234", "title": "声音克隆测试", "date": "2026-06-12 22:34",
      "duration_sec": 14, "speakers": 0, "todos": 1, "mine": 1,
      "summary": "测试音色复刻。", "dir": "/y", "files": {"minutes": "纪要_y.md"}},

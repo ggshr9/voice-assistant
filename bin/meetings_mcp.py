@@ -16,7 +16,7 @@
   ask_meetings(question, top?)    —— 自然语言问答（两段式，同 recall），要本地大脑在跑
 
 search 和 ask 是互补的，别只留一个：
-  search 精确、秒回、不需要大脑，适合「谁提过 某支付平台」这种找原话；
+  search 精确、秒回、不需要大脑，适合「谁提过某个专有名词」这种找原话；
   ask 要过大脑、十几秒，适合「当时结论是什么」这种需要读懂再归纳的问题。
 
 注册（Claude Code）：
@@ -220,7 +220,7 @@ TOOLS = [
     {
         "name": "search_meetings",
         "description": "在所有会的转写全文里做字面检索，返回命中处上下文。秒回、不需要本地大脑。"
-                       "适合「谁提过 某支付平台」这种要找原话的问题；"
+                       "适合「谁提过某个专有名词」这种要找原话的问题；"
                        "要归纳、要结论请用 ask_meetings。",
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "description": "关键词"},
@@ -230,7 +230,7 @@ TOOLS = [
     {
         "name": "ask_meetings",
         "description": "用自然语言问过去的会议，两段式检索后由本地大脑作答并标出处。"
-                       "适合「上次聊联调的结论是什么」这类需要读懂再归纳的问题。"
+                       "适合「上次联调的结论是什么」这类需要读懂再归纳的问题。"
                        "**需要本地大脑在跑（llm start），一次约十几秒**；只要找原话就用 search_meetings。",
         "inputSchema": {"type": "object", "properties": {
             "question": {"type": "string", "description": "你的问题"},
