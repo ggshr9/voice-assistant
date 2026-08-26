@@ -284,12 +284,14 @@ async def session_delete(request):
 
 
 async def session_minutes(request):
+    # 口令要排在查会话之前 —— 否则 404/403 的差别会向未鉴权者泄漏「这个会话存不存在」。
+    # 其余写接口(rename/delete)本来就是先验口令,这里从前是反的。
+    body = await request.json() if request.can_read_body else {}
+    if not check_pw(body.get("pw", "") or request.query.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
     d = sess_dir(request.match_info["id"])
     if not d:
         return web.json_response({"error": "无此会议"}, status=404)
-    body = await request.json() if request.can_read_body else {}
-    if not check_pw(body.get("pw", "")):
-        return web.json_response({"error": "口令错误"}, status=403)
     finalize_wav(d)                  # pcm→wav(若刚停还没封);已压成 opus 时无操作
     t = _COMPRESS.get(os.path.basename(d))   # 若正在压成 opus,先等它完成,避免拿到正被删的 wav
     if t and not t.done():

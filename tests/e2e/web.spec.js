@@ -156,3 +156,130 @@ test.describe('上传 → 纪要（这条路曾坏了两个月）', () => {
     expect(status, '口令错误必须被拒').toBe(403);
   });
 });
+
+test.describe('会话生命周期：改名 / 删除', () => {
+  const FIXTURE = process.env.CAPTION_FIXTURE;
+  test.skip(!FIXTURE, 'CAPTION_FIXTURE 未设置');
+
+  // 建一场临时会话。标题一律带 E2E_ 前缀，afterEach 靠它兜底清理 ——
+  // 只靠「测试自己删」不够：断言一挂就直接抛出，删除那步永远走不到，
+  // 服务器上就攒下一堆垃圾会话（实测第一次跑就留了 3 个）。
+  async function makeSession(page, title) {
+    await enter(page);
+    await page.fill('#title', title);
+    await page.setInputFiles('#upfile', FIXTURE);
+    await expect(page.locator('#detailView')).toBeVisible({ timeout: 120000 });
+    return await page.evaluate(() => window.curSid || null);
+  }
+
+  test.afterEach(async ({ page }) => {
+    // 用接口直接删，不依赖 UI ——  UI 可能正停在失败时的任意状态
+    await page.evaluate(async (pw) => {
+      const r = await fetch('/sessions?pw=' + encodeURIComponent(pw));
+      const d = await r.json().catch(() => ({}));
+      for (const s of (d.sessions || d || [])) {
+        if (typeof s?.title === 'string' && s.title.startsWith('E2E')) {
+          await fetch('/session/' + encodeURIComponent(s.id) + '/delete?pw='
+                      + encodeURIComponent(pw), { method: 'POST' }).catch(() => {});
+        }
+      }
+    }, PW);
+  });
+
+  test('改名后标题即时更新，刷新后仍在', async ({ page }) => {
+    test.setTimeout(5 * 60 * 1000);
+    const orig = 'E2E改名前_' + Date.now();
+    await makeSession(page, orig);
+    await expect(page.locator('#dTitle')).toHaveText(orig);
+
+    const renamed = orig.replace('改名前', '改名后');
+    page.once('dialog', d => d.accept(renamed));      // prompt()
+    await page.getByRole('button', { name: /改名/ }).click();
+    await expect(page.locator('#dTitle')).toHaveText(renamed);
+
+    // 回首页再进来，确认是真落盘了而不是只改了 DOM
+    await page.click('#homeBtn');
+    await page.waitForTimeout(1200);
+    await expect(page.locator('#lib')).toContainText(renamed);
+  });
+
+  test('改名传空标题不生效（不该把标题清掉）', async ({ page }) => {
+    test.setTimeout(5 * 60 * 1000);
+    const orig = 'E2E空标题_' + Date.now();
+    await makeSession(page, orig);
+    page.once('dialog', d => d.accept('   '));        // 只有空白
+    await page.getByRole('button', { name: /改名/ }).click();
+    await page.waitForTimeout(800);
+    await expect(page.locator('#dTitle')).toHaveText(orig, { timeout: 5000 });
+  });
+
+  test('取消改名对话框不改动任何东西', async ({ page }) => {
+    test.setTimeout(5 * 60 * 1000);
+    const orig = 'E2E取消_' + Date.now();
+    await makeSession(page, orig);
+    page.once('dialog', d => d.dismiss());
+    await page.getByRole('button', { name: /改名/ }).click();
+    await page.waitForTimeout(800);
+    await expect(page.locator('#dTitle')).toHaveText(orig);
+  });
+
+  test('删除后回到首页且列表里不再出现', async ({ page }) => {
+    test.setTimeout(5 * 60 * 1000);
+    const title = 'E2E待删_' + Date.now();
+    await makeSession(page, title);
+    page.once('dialog', d => d.accept());             // confirm()
+    await page.getByRole('button', { name: /删除/ }).click();
+    await expect(page.locator('#homeView')).toBeVisible({ timeout: 20000 });
+    await page.waitForTimeout(1500);
+    await expect(page.locator('#lib')).not.toContainText(title);
+  });
+
+  test('取消删除对话框则会话仍在', async ({ page }) => {
+    test.setTimeout(5 * 60 * 1000);
+    const title = 'E2E不删_' + Date.now();
+    await makeSession(page, title);
+    page.once('dialog', d => d.dismiss());
+    await page.getByRole('button', { name: /删除/ }).click();
+    await page.waitForTimeout(1000);
+    await expect(page.locator('#dTitle')).toHaveText(title);
+    // 收尾：真的删掉，别给服务器留垃圾
+    page.once('dialog', d => d.accept());
+    await page.getByRole('button', { name: /删除/ }).click();
+    await expect(page.locator('#homeView')).toBeVisible({ timeout: 20000 });
+  });
+});
+
+test.describe('接口层安全（绕过前端直接打）', () => {
+  async function api(page, path, init) {
+    return await page.evaluate(async ([u, i]) => {
+      const r = await fetch(u, i);
+      let body = null;
+      try { body = await r.json(); } catch (e) { /* 非 JSON */ }
+      return { status: r.status, body };
+    }, [path, init || {}]);
+  }
+
+  test('删除接口的 sid 不能穿越目录', async ({ page }) => {
+    await enter(page);
+    for (const evil of ['../', '..', '../../etc', '%2e%2e%2f', '/etc']) {
+      const r = await api(page,
+        `/session/${encodeURIComponent(evil)}/delete?pw=${encodeURIComponent(PW)}`,
+        { method: 'POST' });
+      expect(r.status, `${evil} 没被拦住`).not.toBe(200);
+    }
+  });
+
+  test('所有写接口都要口令', async ({ page }) => {
+    await page.goto(URL, { waitUntil: 'domcontentloaded' });
+    const paths = [
+      ['/session/x/delete', 'POST'],
+      ['/session/x/rename', 'POST'],
+      ['/session/x/minutes', 'POST'],
+      ['/sessions', 'GET'],
+    ];
+    for (const [p, method] of paths) {
+      const r = await api(page, p, { method });
+      expect([401, 403], `${p} 无口令时返回了 ${r.status}`).toContain(r.status);
+    }
+  });
+});
