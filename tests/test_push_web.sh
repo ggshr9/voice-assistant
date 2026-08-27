@@ -15,7 +15,14 @@ STUB="$(mktemp -d)"
 printf '#!/bin/bash\necho "REACHED_NETWORK" >&2\nexit 0\n' > "$STUB/ssh";  chmod +x "$STUB/ssh"
 printf '#!/bin/bash\necho "REACHED_NETWORK" >&2\nexit 0\n' > "$STUB/scp";  chmod +x "$STUB/scp"
 
-out="$(PATH="$STUB:$PATH" SYNC_WEB_REMOTE=fake-remote bash "$REPO/bin/push-web" web_caption.py 2>&1)"
+# 合成一个含占位值的脏文件 —— 从前直接拿 web_caption.py 当测试对象,
+# 配置外移(2026-08-27)后它干净了,这些用例便集体失效:
+# 护栏测试不能依赖「仓库文件恰好是脏的」。
+mkdir -p "$STUB/repo/web"
+cp -r "$REPO/bin" "$STUB/repo/bin"
+printf 'CERT = "~/le/live/caption.example.com/fullchain.pem"\n' > "$STUB/repo/web/dirty.py"
+cp "$REPO/web/jobs.py" "$STUB/repo/web/jobs.py"
+out="$(PATH="$STUB:$PATH" SYNC_WEB_REMOTE=fake-remote bash "$STUB/repo/bin/push-web" dirty.py 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then ok "含占位值的文件被拒推(退出码 $rc)"; else bad "占位值文件竟然推出去了" "$out"; fi
 echo "$out" | grep -q "example.com" && ok "报错点名了是哪一行占位值" || bad "没指出具体占位值" "$out"
@@ -23,7 +30,7 @@ echo "$out" | grep -q "REACHED_NETWORK" && bad "检查未通过却已经动了�
 echo "$out" | grep -q "打补丁" && ok "给出了正确做法(打补丁而非覆盖)" || bad "没告诉用户该怎么办" "$out"
 
 # 干净文件应通过检查阶段
-out2="$(PATH="$STUB:$PATH" SYNC_WEB_REMOTE=fake-remote bash "$REPO/bin/push-web" jobs.py 2>&1)"
+out2="$(PATH="$STUB:$PATH" SYNC_WEB_REMOTE=fake-remote bash "$STUB/repo/bin/push-web" jobs.py 2>&1)"
 echo "$out2" | grep -q "✓ web/jobs.py" && ok "干净文件通过检查" || bad "干净文件被误拦" "$out2"
 
 rm -rf "$STUB"

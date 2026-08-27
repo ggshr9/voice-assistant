@@ -170,6 +170,12 @@
   #prog2{font-family:var(--mono);white-space:pre-wrap;font-size:12px;color:var(--faint);line-height:1.7;margin-top:10px}
 
   /* 文档卡 */
+  .askrow{display:flex;gap:10px;margin:14px 0 16px}
+  .askrow .input{flex:1}
+  .ask-src{display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 14px}
+  .ask-src .srcchip{font-size:12.5px;padding:3px 12px;border-radius:99px;cursor:pointer;
+    border:1px solid var(--border);color:var(--muted);background:transparent}
+  .ask-src .srcchip:hover{color:var(--fg);border-color:var(--ring)}
   #notesPane{margin-top:14px}
   .notes-head{display:flex;align-items:center;gap:10px;font-size:14px;margin-bottom:8px}
   #notesTa,.notes-detail{width:100%;min-height:110px;resize:vertical;border-radius:10px;
@@ -285,6 +291,19 @@
       <div class="sec-t"><h2>历史会议</h2><div class="line"></div>
         <input id="libSearch" class="input mini" placeholder="搜索标题…">
         <button class="btn ghost sm" id="refreshBtn">刷新</button></div>
+      <!-- 跨会议问答:标题搜索只能翻列表,这里能直接问「上次那事定的啥」。
+           两段式(选会→作答带出处),与 Mac 端 recall 同一套语义。 -->
+      <div class="askrow">
+        <input id="askQ" class="input" placeholder="问会议库：如「缓存方案最后定的是什么？」">
+        <button class="btn" id="askBtn">🔎 问</button>
+      </div>
+      <div id="askCard" class="doc-card" style="display:none">
+        <div class="doc-head"><b>💬 答案</b><span class="sp"></span>
+          <span class="muted" id="askSt"></span>
+          <button class="btn ghost sm" id="askClose">收起</button></div>
+        <div class="doc-body md" id="askAns"></div>
+        <div class="ask-src" id="askSrc"></div>
+      </div>
       <div class="grid" id="lib"></div>
       <div id="libEmpty" style="display:none">还没有会议记录。开一场试试 👆</div>
     </div>
@@ -428,6 +447,29 @@ function renderLib(){
   }
 }
 $('refreshBtn').onclick=loadLib;
+/* ---- 跨会议问答 ---- */
+async function askLibrary(){
+  const q=$('askQ').value.trim(); if(!q) return;
+  $('askBtn').disabled=true; $('askCard').style.display='block';
+  $('askAns').innerHTML=''; $('askSrc').innerHTML='';
+  $('askSt').textContent='检索中…（两段式，约 5~20 秒）';
+  try{
+    const r=await(await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pw,q})})).json();
+    if(r.error){ $('askSt').textContent=''; $('askAns').innerHTML='<div class="empty">'+r.error+'</div>'; return; }
+    $('askSt').textContent=(r.notes&&r.notes.length)?('部分超长已截断'):'';
+    $('askAns').innerHTML=mdToHtml(r.answer||'（空）');
+    for(const src of (r.sources||[])){
+      const c=document.createElement('button'); c.className='srcchip';
+      c.textContent='📄 '+(src.title||src.id)+(src.date?' · '+src.date:'');
+      c.onclick=()=>openDetail(src.id); $('askSrc').appendChild(c);
+    }
+  }catch(e){ $('askSt').textContent=''; $('askAns').innerHTML='<div class="empty">检索失败：'+e+'</div>'; }
+  finally{ $('askBtn').disabled=false; }
+}
+$('askBtn').onclick=askLibrary;
+$('askQ').onkeydown=e=>{ if(e.key==='Enter') askLibrary(); };
+$('askClose').onclick=()=>{ $('askCard').style.display='none'; };
 $('micSel').onchange=e=>{ try{ e.target.value ? localStorage.setItem(MIC_PREF_KEY,e.target.value)
                                                : localStorage.removeItem(MIC_PREF_KEY); }catch(err){}
   const h=$('micHint'); h.className='mic-hint'; h.textContent='换了设备，建议试一下音'; };

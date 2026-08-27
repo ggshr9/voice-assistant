@@ -589,3 +589,40 @@ test.describe('手记 × 转写合并（Granola 式）', () => {
       .toContainText('XYZZY', { timeout: 30000 });
   });
 });
+
+test.describe('跨会议检索问答', () => {
+  test('无口令打 /ask 被拒', async ({ page }) => {
+    await page.goto(URL, { waitUntil: 'domcontentloaded' });
+    const st = await page.evaluate(async () => {
+      const r = await fetch('/ask', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: 'x' }) });
+      return r.status;
+    });
+    expect(st).toBe(403);
+  });
+
+  test('空问题不发请求', async ({ page }) => {
+    await enter(page);
+    const sent = [];
+    page.on('request', r => { if (r.url().includes('/ask')) sent.push(1); });
+    await page.click('#askBtn');
+    await page.waitForTimeout(500);
+    expect(sent.length).toBe(0);
+  });
+
+  test('真实问答:出答案与出处,出处可点进详情', async ({ page }) => {
+    test.setTimeout(4 * 60 * 1000);
+    await enter(page);
+    await page.fill('#askQ', '最近有哪些会议？简单说说各自谈了什么');
+    await page.click('#askBtn');
+    await expect(page.locator('#askCard')).toBeVisible();
+    // LLM 两段式,给足时间;答案区最终要有实质内容
+    await expect(page.locator('#askAns')).not.toBeEmpty({ timeout: 3 * 60 * 1000 });
+    const txt = await page.locator('#askAns').textContent();
+    expect(txt.length, '答案太短不像真的答了').toBeGreaterThan(20);
+    const chips = page.locator('#askSrc .srcchip');
+    await expect(chips.first(), '没有出处 chip').toBeVisible();
+    await chips.first().click();
+    await expect(page.locator('#detailView')).toBeVisible({ timeout: 15000 });
+  });
+});

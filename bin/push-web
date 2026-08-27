@@ -51,10 +51,21 @@ for f in "${FILES[@]}"; do
 done
 echo "✅ 已推送 ${#FILES[@]} 个文件（回滚：ssh $REMOTE 'cp -r ~/voice-svc/_bak_$TS/* ~/voice-svc/web/'）"
 echo "→ 重启并等待就绪"
-ssh "$REMOTE" 'kill -TERM $(pgrep -f "python web_caption.py" | head -1) 2>/dev/null
+ssh "$REMOTE" 'OLD=$(pgrep -f "python web_caption.py" | head -1)
+  kill -TERM "$OLD" 2>/dev/null
+  # 健康检查必须先确认【进程换了】再探 200 —— 老进程没死时它照样返回 200,
+  # 那是假绿:实测一次 kill 未生效,推送的新代码根本没加载,/ask 一直 404,
+  # 而这里报了"已恢复"。先等 pid 变化,再等 200。
+  NEW=""
   for i in $(seq 1 20); do
     sleep 3
-    [ "$(curl -sk -o /dev/null -w %{http_code} --max-time 5 https://127.0.0.1/ 2>/dev/null)" = "200" ] \
-      && { echo "✅ 服务已恢复"; exit 0; }
+    NEW=$(pgrep -f "python web_caption.py" | head -1)
+    [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && break
+    [ "$i" = 20 ] && { echo "❌ 老进程($OLD)拒绝退出,新代码未加载"; exit 1; }
   done
-  echo "❌ 服务没起来,看日志：journalctl -u caption-web -n 40"; exit 1'
+  for i in $(seq 1 20); do
+    [ "$(curl -sk -o /dev/null -w %{http_code} --max-time 5 https://127.0.0.1/ 2>/dev/null)" = "200" ] \
+      && { echo "✅ 服务已恢复(新进程 $NEW)"; exit 0; }
+    sleep 3
+  done
+  echo "❌ 新进程没就绪,看日志：journalctl -u caption-web -n 40"; exit 1'

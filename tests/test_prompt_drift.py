@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO))
 import prompts  # noqa: E402
 
 CONSUMERS = ["bin/minutes", "web/meeting/minutes_lib.py"]
-NAMES = ["NOTE_SYS", "FINAL_SYS", "RECORD_SYS", "ENHANCE_SYS"]
+NAMES = ["NOTE_SYS", "FINAL_SYS", "RECORD_SYS", "ENHANCE_SYS", "PICK_SYS", "ANSWER_SYS"]
 
 
 class TestSingleSource(unittest.TestCase):

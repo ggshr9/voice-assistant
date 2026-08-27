@@ -21,69 +21,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-MAX_CONTEXT_CHARS = 24000        # 每场会喂进去的上限,超了截断并说明
-
-PICK_SYS = (
-    "你在一堆会议里挑出与用户问题相关的那几场。下面每行是一场会：编号、日期、标题、摘要。"
-    "只输出相关会议的编号，用逗号分隔，例如：1,3。"
-    "如果都不相关就输出 none。不要解释，不要输出别的字。"
-)
-
-# 兜底指令要写得"只在真的找不到时才生效",否则会渗进正常回答:
-# 第一版写成「如果没有答案就说没找到」,结果模型在答得很好的情况下
-# 仍然以「没找到。」开头,再洋洋洒洒答完 —— 自相矛盾。
-ANSWER_SYS = (
-    "你在根据会议记录回答问题。只依据给出的会议内容作答，不要编造，"
-    "并标明出处（会议标题或日期，必要时引原话）。\n"
-    "直接给出答案。不要用「没找到」「根据会议记录」之类的话开头。\n"
-    "只有当会议内容里确实没有相关信息时，才说明找不到，"
-    "并简述这几场会实际谈了什么——这一句仅限该情形，答得出来时不要写。"
-)
+# 检索语义(目录格式/选会解析/预算/掐中间截断)在 recall_core.py —— 唯一一份,
+# 网页版(服务器)用同一份。这里只留 Mac 端特有的:索引怎么读、正文在哪。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from recall_core import (MAX_CONTEXT_CHARS, format_catalog, parse_picks,  # noqa: F401,E402
+                         keyword_fallback, trim_middle, split_budget,
+                         build_context as _core_build_context)
+_split_budget = split_budget      # 兼容旧名(测试引用)
 
 
-def format_catalog(entries):
-    """把索引压成第一段检索用的目录文本(每场会一行)。"""
-    lines = []
-    for i, e in enumerate(entries, 1):
-        lines.append(
-            f"{i}. [{e.get('date') or '日期不明'}] {e.get('title') or e.get('id')}"
-            f" —— {e.get('summary') or '(无摘要)'}"
-        )
-    return "\n".join(lines)
-
-
-def parse_picks(raw, count):
-    """从大脑的回答里抠出编号,转成 0 起的下标。
-
-    容忍各种啰嗦写法(`1,3` / `会议 1 和 3` / `1、3`);`none` 或抠不出 → 空列表。
-    """
-    text = (raw or "").strip().lower()
-    if not text or "none" in text:
-        return []
-    import re
-    picks = []
-    for tok in re.findall(r"\d+", text):
-        n = int(tok)
-        if 1 <= n <= count and (n - 1) not in picks:
-            picks.append(n - 1)
-    return picks
-
-
-def keyword_fallback(question, entries, limit=2):
-    """大脑没挑出东西时的兜底:按标题+摘要里的字符重合度排个序。
-
-    中文没有空格分词,这里按 2-gram 重合算,够用即止 —— 它只是兜底,不是主路径。
-    """
-    q = "".join(ch for ch in (question or "") if ch.strip())
-    grams = {q[i:i + 2] for i in range(len(q) - 1)} or {q}
-    scored = []
-    for i, e in enumerate(entries):
-        hay = f"{e.get('title', '')}{e.get('summary', '')}"
-        hits = sum(1 for g in grams if g in hay)
-        if hits:
-            scored.append((hits, i))
-    scored.sort(reverse=True)
-    return [i for _, i in scored[:limit]]
+from prompts import PICK_SYS, ANSWER_SYS  # noqa: E402  两端共用,唯一一份
 
 
 def load_meeting_text(entry, max_chars=MAX_CONTEXT_CHARS):
@@ -107,85 +54,11 @@ def load_meeting_text(entry, max_chars=MAX_CONTEXT_CHARS):
     return "", False
 
 
-_ELLIPSIS = "\n\n〔……中间略去 {n} 字……〕\n\n"
-
-
-def trim_middle(text, max_chars):
-    """超长时**掐掉中间**,保留开头和结尾。
-
-    Returns:
-        (正文, 是否被截断)
-
-    从前是 ``text[:max_chars]`` 只留开头 —— 但会议的结论、待办、期限几乎总在
-    最后:"那就定 Redis""九月九号之前上灰度""散会"。只取前半截,恰好把
-    最该被问到的部分丢掉,而 recall 最常见的问题就是「最后定的是什么」。
-    掐中间保留两头,是这类文本上信息密度最高的取法。
-    """
-    if max_chars <= 0:                    # 预算被分光了,这场一个字也放不下
-        return "", bool(text)
-    if len(text) <= max_chars:
-        return text, False
-    marker = _ELLIPSIS.format(n=len(text) - max_chars)
-    budget = max_chars - len(marker)
-    if budget <= 0:                       # 上限小到放不下标记,退回只取开头
-        return text[:max_chars], True
-    head = budget * 2 // 3                # 开头交代背景,结尾承载结论 —— 结尾给足
-    tail = budget - head
-    return text[:head] + marker + text[-tail:], True
-
-
-def _split_budget(sizes, total):
-    """把总预算分给各场会:先按均分给,短会用不完的额度让给长会。
-
-    这样两场「一短一长」不会让长会被腰斩,而总量仍然守得住。
-    """
-    n = len(sizes)
-    if n == 0:
-        return []
-    quota = [0] * n
-    remaining, active = total, list(range(n))
-    while active:
-        share = remaining // len(active)
-        if share <= 0:
-            break
-        done = [i for i in active if sizes[i] <= share]
-        if not done:                      # 剩下的都超额 → 平分了事
-            for i in active:
-                quota[i] += share
-            remaining -= share * len(active)
-            break
-        for i in done:
-            quota[i] += sizes[i]
-            remaining -= sizes[i]
-        active = [i for i in active if i not in done]
-    return quota
-
-
 def build_context(entries, picks, max_chars=MAX_CONTEXT_CHARS):
-    """把选中的会拼成第二段的输入。
-
-    ``max_chars`` 是**所有会加起来**的上限。从前它是按【每场】施加的 ——
-    名字叫 MAX_CONTEXT_CHARS 却能吐出它的 N 倍(实测 3 场 → 72055 字),
-    而 top 是用户可传的(`recall 10 "…"` 就是 24 万字),足以撑爆上下文窗口。
-    """
-    picked = [entries[i] for i in picks if 0 <= i < len(entries)]
-    raw = []
-    for e in picked:
-        text, _ = load_meeting_text(e, max_chars=10 ** 9)   # 先原样读,预算在下面分
-        raw.append((e, text))
-    quota = _split_budget([len(t) for _, t in raw], max_chars)
-
-    blocks, notes = [], []
-    for (e, text), q in zip(raw, quota):
-        if not text:
-            continue
-        body, cut = trim_middle(text, q)
-        head = f"### 会议：{e.get('title') or e.get('id')}（{e.get('date') or '日期不明'}）"
-        blocks.append(f"{head}\n{body}")
-        if cut:
-            notes.append(f"{e.get('title') or e.get('id')}（{len(text)} 字，"
-                         f"取了首尾共 {q} 字，中间略去）")
-    return "\n\n".join(blocks), notes
+    """薄壳:预算与截断语义在 recall_core(唯一一份);这里只提供 Mac 端的正文读取。"""
+    return _core_build_context(entries, picks,
+                               load_text=lambda e: load_meeting_text(e, 10 ** 9)[0],
+                               max_chars=max_chars)
 
 
 def main(argv):

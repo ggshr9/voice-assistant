@@ -419,6 +419,33 @@ async def session_notes(request):
     return web.json_response({"ok": True, "chars": len(text)})
 
 
+async def ask_library(request):
+    """跨会议检索问答:两段式(选会 → 作答带出处),语义与 Mac 端 recall 同源。
+
+    口令先于一切(写接口的既有教训);LLM 是阻塞的 urllib,丢进 executor,
+    别卡住正在录音的 WebSocket。
+    """
+    body = await request.json() if request.can_read_body else {}
+    if not check_pw(body.get("pw", "") or request.query.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
+    q = (body.get("q") or "").strip()
+    if not q:
+        return web.json_response({"error": "问题不能为空"}, status=400)
+    if len(q) > 2000:
+        return web.json_response({"error": "问题太长"}, status=413)
+    import sys as _sys
+    mdir = os.path.join(HERE, "meeting")
+    if mdir not in _sys.path:
+        _sys.path.insert(0, mdir)
+    import recall_lib
+    loop = asyncio.get_event_loop()
+    try:
+        r = await loop.run_in_executor(None, lambda: recall_lib.ask_meetings(q, SESSIONS))
+    except Exception as e:                     # noqa: BLE001
+        return web.json_response({"error": f"检索失败：{e}"}, status=502)
+    return web.json_response(r)
+
+
 async def sessions_list(request):
     if not check_pw(request.query.get("pw", "")):
         return web.json_response({"error": "口令错误"}, status=403)
@@ -490,6 +517,7 @@ def main():
     app.router.add_get("/session/{id}/audio", session_audio)
     app.router.add_get("/session/{id}", session_get)
     app.router.add_get("/sessions", sessions_list)
+    app.router.add_post("/ask", ask_library)
     app.router.add_get("/job/{job}", job_status)
     # 证书路径只从环境读(secrets.env 注入),代码里不留任何域名 ——
     # 从前默认值里写着真实域名,公开仓库时被脱敏成占位域名,于是仓库和服务器

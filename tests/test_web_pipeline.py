@@ -13,6 +13,7 @@ bug —— `ff[5:5] = ["-ac","1"]` 插进了 `-ar` 和 `16000` 中间,生成 `-a
 跑: uv run tests/test_web_pipeline.py
 """
 import os
+import tempfile
 import importlib.util
 import pathlib
 import sys
@@ -509,6 +510,98 @@ class TestPipelineWritesEnhanced(unittest.TestCase):
 
     def test_返回值带enhanced字段(self):
         self.assertIn('"enhanced": enhanced', self.src)
+
+
+def load_recall_lib():
+    sys.path.insert(0, str(REPO))                    # recall_core / prompts 在仓库根
+    fake = types.ModuleType("minutes_lib")
+    fake.ask = lambda *a, **k: "1"
+    sys.modules["minutes_lib"] = fake
+    return _load("wrecall", WEB / "meeting" / "recall_lib.py"), fake
+
+
+class TestRecallLib(unittest.TestCase):
+    """服务器侧跨会议检索:目录扫描的健壮性 + 两段式的接线。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.r, self.fake = load_recall_lib()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _sess(self, name, title="会", minutes=None, started=1787700000):
+        d = os.path.join(self.root, name); os.makedirs(d)
+        import json as _j
+        open(os.path.join(d, "meta.json"), "w", encoding="utf-8").write(
+            _j.dumps({"id": name, "title": title, "started": started}))
+        if minutes is not None:
+            open(os.path.join(d, "会议纪要.md"), "w", encoding="utf-8").write(minutes)
+        return d
+
+    def test_没有文字内容的会不进目录(self):
+        """只有录音没转写的会,检索了也答不出 —— 别把它塞给选会模型当噪声。"""
+        self._sess("a", minutes="## 一句话摘要\n定了用Redis\n")
+        self._sess("b", minutes=None)                # 只有 meta,没有任何文字
+        entries = self.r.load_entries(self.root)
+        self.assertEqual([e["id"] for e in entries], ["a"])
+
+    def test_坏meta跳过而不是拖垮整个检索(self):
+        d = os.path.join(self.root, "bad"); os.makedirs(d)
+        open(os.path.join(d, "meta.json"), "w").write("不是json{{{")
+        self._sess("good", minutes="纪要")
+        self.assertEqual(len(self.r.load_entries(self.root)), 1)
+
+    def test_摘要取一句话摘要段(self):
+        self._sess("a", minutes="# 头\n\n## 一句话摘要\n确定采用 Redis 方案\n\n## 决议\n…")
+        self.assertIn("Redis", self.r.load_entries(self.root)[0]["summary"])
+
+    def test_两段式真的接上了(self):
+        """第一段收到目录、第二段收到正文与问题 —— 断言实际传给 LLM 的内容,
+        不只测各函数自身(「函数对了≠被调用了」的教训)。"""
+        self._sess("a", title="缓存评审", minutes="## 一句话摘要\n定Redis\n\n正文:那就定 Redis")
+        calls = []
+        self.fake.ask = lambda sysmsg, user, **k: (calls.append((sysmsg, user)) or ("1" if len(calls) == 1 else "答案:Redis"))
+        r = self.r.ask_meetings("缓存定了什么", self.root)
+        self.assertEqual(len(calls), 2, "该恰好两段:选会 + 作答")
+        self.assertIn("缓存评审", calls[0][1], "第一段要看到目录")
+        self.assertIn("那就定 Redis", calls[1][1], "第二段要看到正文")
+        self.assertEqual(r["sources"][0]["title"], "缓存评审")
+
+    def test_模型没挑出来走关键词兜底(self):
+        self._sess("a", title="Redis缓存评审", minutes="## 一句话摘要\n定Redis\n")
+        self.fake.ask = lambda sysmsg, user, **k: ("none" if "挑出" in sysmsg or "编号" in sysmsg else "答")
+        r = self.r.ask_meetings("Redis缓存", self.root)
+        self.assertTrue(r["sources"], "兜底没接上")
+
+    def test_空库给友好提示不调LLM(self):
+        calls = []
+        self.fake.ask = lambda *a, **k: calls.append(1)
+        r = self.r.ask_meetings("问题", self.root)
+        self.assertIn("空", r["answer"])
+        self.assertEqual(calls, [])
+
+    def test_空问题明确报错(self):
+        with self.assertRaises(ValueError):
+            self.r.ask_meetings("  ", self.root)
+
+
+class TestAskEndpointSource(unittest.TestCase):
+    def setUp(self):
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = src.index("async def ask_library")
+        self.body = src[i:src.index("\nasync def", i + 10)]
+
+    def test_口令先于一切(self):
+        self.assertLess(self.body.index("check_pw"), self.body.index("recall_lib"))
+
+    def test_LLM走executor不卡事件循环(self):
+        """检索要 5~20 秒,阻塞事件循环会卡住正在录音的 WebSocket。"""
+        self.assertIn("run_in_executor", self.body)
+
+    def test_有长度上限(self):
+        self.assertIn("413", self.body)
 
 
 if __name__ == "__main__":
