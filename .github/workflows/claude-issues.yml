@@ -1,0 +1,52 @@
+# Issue 自动处理:新 issue / 他人评论 → runner 里起 Claude Code 审查、修改、测试、回 PR。
+#
+# 与本地会话那套监控的分工:
+#   Actions(这里)  —— 持久化,全天候:triage → 实现 → 单测 → 开 PR → issue 回复
+#   本地会话        —— 唯一能碰私有 GPU 服务器的一侧:合并后的部署与 Playwright E2E
+# runner 连不上内网服务器,所以这里【不做】部署与线上 E2E —— 边界写进了下面的 prompt。
+name: issue-autopilot
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle:
+    # 只理会真人:机器人评论(含本 action 自己的回复)一律跳过,防自我唤醒循环
+    if: >
+      github.event.issue.pull_request == null &&
+      (github.event_name == 'issues' || github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5        # 仓库测试全部以 uv run 单文件方式执行
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            你在维护 voice-assistant(本地会议语音栈)。处理触发本次运行的 issue/评论,规范:
+
+            1. 审查先行:判断是 bug、合理功能请求、还是超纲。读相关代码再下结论,不凭印象。
+            2. 修改:开分支实现。遵循仓库注释风格 —— 注释写「为什么」而不是「做什么」,
+               把踩坑原因留在代码旁边。中文注释。
+            3. 测试是硬门槛:改动必须配测试并全部通过(tests/ 下 uv run 逐文件跑)。
+               没有测试的修改不许交付。行为断言优先于源码字符串断言。
+            4. 交付:开 PR(绝不直接推 main),PR 描述里写清做了什么、为什么、怎么验的;
+               然后在 issue 下用中文简要回复方案与 PR 链接。不要关闭 issue ——
+               合并时由 PR 的 closes #N 关闭。
+            5. 边界(必须遵守):你在公共 runner 上,连不上项目的私有 GPU 服务器。
+               不做部署、不跑 Playwright E2E(那由维护者本地完成,在 PR 里注明"待本地 E2E")。
+               涉及生产配置、密钥、删除数据、或诉求含糊的 —— 只回复分析和追问,@ggshr9 定夺,不动代码。
+            6. 评论触发时:若只是致谢或无需行动,不必回复,直接结束。
+            语气:直接、技术、不客套。
+          claude_args: |
+            --max-turns 80
