@@ -74,8 +74,11 @@ class WhisperBackend:
         from faster_whisper import WhisperModel
         model_id = os.environ.get("CAPTION_ASR_MODEL", "large-v3-turbo")
         device = os.environ.get("CAPTION_ASR_DEVICE", "cuda")
-        print(f"加载 {model_id} 到 {device} (faster-whisper)...", flush=True)
-        self.m = WhisperModel(model_id, device=device, compute_type="float16")
+        # float16 只在 GPU 上有:CPU(容器 CPU profile / 无卡机器)要 int8,写死会当场报错
+        compute = os.environ.get("CAPTION_ASR_COMPUTE",
+                                 "float16" if device.startswith("cuda") else "int8")
+        print(f"加载 {model_id} 到 {device}/{compute} (faster-whisper)...", flush=True)
+        self.m = WhisperModel(model_id, device=device, compute_type=compute)
 
     def transcribe(self, audio, lang_ui):
         segs, info = self.m.transcribe(audio, language=lang_ui or None,

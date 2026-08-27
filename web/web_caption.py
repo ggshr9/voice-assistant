@@ -560,8 +560,21 @@ def main():
     cert = os.path.expanduser(os.environ.get("CAPTION_CERT", ""))
     key = os.path.expanduser(os.environ.get("CAPTION_KEY", ""))
     if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
-        raise SystemExit("缺少 TLS 证书：请在 secrets.env 里设置 CAPTION_CERT / CAPTION_KEY"
-                         f"（当前 CAPTION_CERT={cert or '未设置'}）")
+        if os.environ.get("CAPTION_TLS_SELFSIGN") == "1":
+            # 容器首启:自签一张。浏览器会警告,但 getUserMedia 要求 https,没有证书连麦克风都拿不到
+            d = os.environ.get("CAPTION_TLS_DIR", "/data/tls")
+            os.makedirs(d, exist_ok=True)
+            cert, key = os.path.join(d, "self.crt"), os.path.join(d, "self.key")
+            if not (os.path.exists(cert) and os.path.exists(key)):
+                import subprocess
+                subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                                "-keyout", key, "-out", cert, "-days", "3650",
+                                "-subj", "/CN=voice-assistant"], check=True,
+                               capture_output=True)
+                print(f"已自签 TLS 证书 → {cert}", flush=True)
+        else:
+            raise SystemExit("缺少 TLS 证书：请在 secrets.env 里设置 CAPTION_CERT / CAPTION_KEY"
+                             f"（当前 CAPTION_CERT={cert or '未设置'}；容器可设 CAPTION_TLS_SELFSIGN=1）")
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
     web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8443")), ssl_context=ctx)

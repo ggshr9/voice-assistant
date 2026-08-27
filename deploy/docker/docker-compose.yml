@@ -1,0 +1,41 @@
+# 用法:
+#   cp .env.example .env   # 填口令与 LLM 网关
+#   docker compose --profile cpu up -d      # 无卡机器
+#   docker compose --profile gpu up -d      # NVIDIA(需 nvidia-container-toolkit)
+# 打开 https://<主机>:8443(自签证书,浏览器警告点「继续」)
+services:
+  web-cpu:
+    profiles: ["cpu"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args: { TORCH_FLAVOR: cpu }
+    env_file: .env
+    environment:
+      CAPTION_ASR_BACKEND: whisper          # cpu 上 whisper int8 比 qwen 快得多
+      CAPTION_ASR_DEVICE: cpu
+      CAPTION_ASR_MODEL: ${CPU_ASR_MODEL:-small}
+    ports: ["8443:8443"]
+    volumes: ["va-data:/data"]
+    restart: unless-stopped
+
+  web-gpu:
+    profiles: ["gpu"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args: { TORCH_FLAVOR: cu121 }
+    env_file: .env
+    environment:
+      CAPTION_ASR_BACKEND: qwen3            # 中文实测明显强于 whisper
+      CAPTION_ASR_DEVICE: cuda:0
+    ports: ["8443:8443"]
+    volumes: ["va-data:/data"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: ["gpu"] }]
+    restart: unless-stopped
+
+volumes:
+  va-data:

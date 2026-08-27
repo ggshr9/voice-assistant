@@ -386,3 +386,26 @@ CAPTION_FIXTURE=/path/to/一段短音频.m4a \
 ⚠️ 本机若已有服务占着目标端口，`ssh -L` 可能只绑到 IPv6 `[::1]`，
 而 curl/浏览器走 IPv4 会打到那个无关服务上（踩过，表现为莫名其妙的 426）。
 所以显式写 `-L 127.0.0.1:<port>:...`，并先 `lsof -nP -iTCP:<port>` 确认端口空闲。
+
+---
+
+## 容器化部署（2026-08-27,issue #2）
+
+```bash
+cd deploy/docker && cp .env.example .env    # 填口令与 LLM 网关(任何 OpenAI 兼容端点)
+docker compose --profile cpu up -d          # 无卡机器:whisper int8,慢但全功能
+docker compose --profile gpu up -d          # NVIDIA:Qwen3-ASR(需 nvidia-container-toolkit)
+```
+
+打开 `https://<主机>:8443`。容器首启自签 TLS 证书（`CAPTION_TLS_SELFSIGN=1`）——
+浏览器警告点「继续」；**必须是 https**，`getUserMedia` 在 http 下连麦克风都拿不到。
+会话与模型缓存都在 `va-data` volume 里，容器可随意重建。
+
+Windows 用户：装 Docker Desktop 后双击 `windows/start.cmd` —— 首次生成 `.env`
+让你填 API 配置，再次运行即构建+启动+开浏览器。
+（Mac CLI 那套是 MLX/Apple Silicon 专属，Windows 走网页版。）
+
+三个为容器做的代码改动（对裸机零影响）：
+- `asr_backends`:whisper 的 compute_type 不再写死 float16（CPU 要 int8，写死当场报错）
+- `meeting_pipeline`:两个解释器路径可用 `MEETING_PY_STT/PY_DIA` 顶掉（容器里全栈同一解释器）
+- `web_caption`:显式 `CAPTION_TLS_SELFSIGN=1` 才自签，裸机缺证书仍大声报错

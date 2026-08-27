@@ -6,8 +6,9 @@ import sys, os, re, json, glob, subprocess
 HOME = os.path.expanduser("~")
 SVC = os.path.join(HOME, "voice-svc")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY_STT = os.path.join(SVC, ".venv/bin/python")          # faster-whisper(ctranslate2)
-PY_DIA = os.path.join(SVC, ".venv-meeting/bin/python")  # pyannote(torch)
+# 解释器可用环境变量顶掉:裸机部署是两个 venv,容器里全栈装在同一个解释器
+PY_STT = os.environ.get("MEETING_PY_STT", os.path.join(SVC, ".venv/bin/python"))
+PY_DIA = os.environ.get("MEETING_PY_DIA", os.path.join(SVC, ".venv-meeting/bin/python"))
 
 sys.path.insert(0, HERE)
 import minutes_lib

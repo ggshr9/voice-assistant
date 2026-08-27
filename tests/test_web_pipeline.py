@@ -604,6 +604,27 @@ class TestAskEndpointSource(unittest.TestCase):
         self.assertIn("413", self.body)
 
 
+class TestContainerKnobs(unittest.TestCase):
+    """容器化(issue #2)依赖的三个开关 —— 都是源码级不变量,防被"顺手清理"掉。"""
+
+    def test_whisper_compute_不写死float16(self):
+        src = (WEB / "asr_backends.py").read_text(encoding="utf-8")
+        self.assertIn("CAPTION_ASR_COMPUTE", src)
+        self.assertIn("int8", src, "CPU 默认要落到 int8,否则容器 CPU profile 起不来")
+
+    def test_批处理解释器可被环境顶掉(self):
+        src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
+        self.assertIn("MEETING_PY_STT", src)
+        self.assertIn("MEETING_PY_DIA", src)
+
+    def test_自签证书必须显式开启(self):
+        """裸机缺证书要大声报错的语义不能被容器便利冲掉。"""
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        self.assertIn('CAPTION_TLS_SELFSIGN") == "1"', src)
+        self.assertIn("raise SystemExit", src[src.index("CAPTION_TLS_SELFSIGN"):],
+                      "没开自签且没证书时仍要拒绝启动")
+
+
 class TestPauseProtocol(unittest.TestCase):
     """暂停控制流的三条源码级不变量(issue #1 的彻底方案)。"""
 
