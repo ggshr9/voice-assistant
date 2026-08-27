@@ -188,7 +188,7 @@ cd deploy/docker && cp .env.example .env    # 填口令与 LLM 网关
 docker compose --profile cpu up -d          # 无卡机器；有 NVIDIA 显卡换 --profile gpu
 ```
 
-Windows 用户装 Docker Desktop 后双击 `deploy/docker/windows/start.cmd` 即可。
+Windows 用户装 Docker Desktop 后双击 `windows/start.cmd` 即可。
 细节（TLS 自签证书、数据卷、容器专用的三处代码改动）见
 **[docs/DEPLOY.md](docs/DEPLOY.md)** 的「容器化部署」一节。
 
