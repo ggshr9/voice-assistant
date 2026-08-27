@@ -179,6 +179,19 @@ recall "上次接口联调的 deadline 是哪天"   # 自然语言检索
 `setup` 会实际去连、去查每一项（工具链、模型、HF token、pyannote 条款、
 两个音频设备、大脑），缺什么直接把命令给你 —— 不用照着文档一条条比对。
 
+### C. Docker 部署 — 免装依赖，容器里跑网页版
+
+不想装两套虚拟环境、只想先跑起来看看，用这条：
+
+```bash
+cd deploy/docker && cp .env.example .env    # 填口令与 LLM 网关
+docker compose --profile cpu up -d          # 无卡机器；有 NVIDIA 显卡换 --profile gpu
+```
+
+Windows 用户装 Docker Desktop 后双击 `deploy/docker/windows/start.cmd` 即可。
+细节（TLS 自签证书、数据卷、容器专用的三处代码改动）见
+**[docs/DEPLOY.md](docs/DEPLOY.md)** 的「容器化部署」一节。
+
 ## 组件
 
 > 每节标了平台。Linux 只关心「网页版」「声纹识别」「共享 prompt」三节，
