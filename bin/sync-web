@@ -44,6 +44,8 @@ fi
 echo "▶ 推共享代码到 ${REMOTE}（prompt 与声纹逻辑以仓库为准）…"
 scp -q "$REPO/prompts.py" "$REMOTE:~/voice-svc/prompts.py"
 scp -q "$REPO/bin/_voiceprint.py" "$REMOTE:~/voice-svc/_voiceprint.py"
+scp -q "$REPO/noise_filter.py" "$REMOTE:~/voice-svc/noise_filter.py"   # 幻觉过滤,唯一一份
+scp -q "$REPO/llm_chain.py" "$REMOTE:~/voice-svc/llm_chain.py"         # 候选链语义,唯一一份
 
 VP="$HOME/.config/voiceprints.json"
 if [ "${SYNC_VOICEPRINTS:-0}" = "1" ] && [ -f "$VP" ]; then

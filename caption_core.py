@@ -1,4 +1,5 @@
 """实时字幕的纯逻辑:VAD 切句 / STT / 翻译 / 幻觉过滤。不碰 GUI、不直接开音频设备。"""
+import sys
 import os, json, re, wave, urllib.request, urllib.error
 from collections import Counter
 
@@ -12,10 +13,12 @@ LLM_URL = os.environ.get("CAPTION_LLM_URL", "")
 LLM_KEY = os.environ.get("CAPTION_LLM_KEY", "")
 LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 
-HALLU_PHRASES = ["点赞", "订阅", "转发", "打赏", "字幕", "明镜", "点点栏目",
-                 "感谢观看", "谢谢观看", "谢谢大家", "下期再见", "志愿者",
-                 "请不吝", "关注我", "Amara", "字幕组"]
-_HALLU_EXACT = {"字幕", "谢谢观看", "请订阅", "by", "you", ".", "", "thank you", "thanks"}
+# 幻觉词表与判定收进 noise_filter.py(全项目唯一一份,sync-web 推到服务器)。
+# 曾在这里和 web/stt.py 各写一遍,内容随即漂移:那边有整句复读检测这边没有,
+# 这边有单字符刷屏检测那边没有 —— 两端用户遇到同一批模型幻觉,防线却各缺一半。
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from noise_filter import is_noise  # noqa: F401,E402  (re-export:调用方仍用 cc.is_noise)
+from llm_chain import parse_chain, try_next_model  # noqa: E402
 
 
 def _require(url, env_name):
@@ -108,19 +111,8 @@ _TRANS_SYS = ("你是同声传译。把用户给的这句话翻成简洁、口�
 
 
 def model_chain(spec=None):
-    """CAPTION_LLM_MODEL 支持逗号分隔的候选链,前面的挂了自动退到后面。
-
-    **为什么需要**:网关上的模型会被下线。实测公司网关的 Qwen3.6 仍在 /models
-    列表里,chat 却返回 404("Received Model Group=Qwen3.6")——
-    单点配置意味着字幕直接哑掉,而且报错还看不出是模型没了。
-    """
-    raw = LLM_MODEL if spec is None else spec
-    out = []
-    for m in (raw or "").split(","):
-        m = m.strip()
-        if m and m not in out:
-            out.append(m)
-    return out or [""]
+    """薄壳:链解析语义在 llm_chain.parse_chain(唯一一份)。"""
+    return parse_chain(LLM_MODEL if spec is None else spec)
 
 
 def translate(text, src_lang, url=None):
@@ -161,11 +153,11 @@ def translate(text, src_lang, url=None):
                 except Exception as e2:            # noqa: BLE001
                     errs.append(f"{model}: {e2}")
                     continue
-            elif e.code == 404:                    # 这个模型下线了,换下一个
-                errs.append(f"{model}: 404 模型不存在")
+            elif try_next_model(e):                # 模型侧问题(404/429/5xx),换下一个
+                errs.append(f"{model}: HTTP {e.code}")
                 continue
             else:
-                raise
+                raise                              # 401/403 等配置错误,该抛就抛
         except Exception as e:                     # noqa: BLE001
             errs.append(f"{model}: {type(e).__name__} {e}")
             continue
@@ -178,16 +170,3 @@ def translate(text, src_lang, url=None):
             return zh
         errs.append(f"{model}: 空译文")
     raise RuntimeError("翻译无可用模型 —— " + " | ".join(errs[-3:]))
-
-
-def is_noise(text):
-    """空串 / whisper 幻觉 / 字幕台词 → True(丢弃)。"""
-    c = text.strip("。.，,！!？? ").lower()
-    if not c or c in _HALLU_EXACT or len(c) < 2:
-        return True
-    if any(p in text for p in HALLU_PHRASES):
-        return True
-    t = re.sub(r"[，。！？、\s,.!?]", "", text)
-    if len(t) >= 4 and Counter(t).most_common(1)[0][1] >= max(5, len(t) * 0.5):
-        return True
-    return False

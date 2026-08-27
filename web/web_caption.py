@@ -491,10 +491,16 @@ def main():
     app.router.add_get("/session/{id}", session_get)
     app.router.add_get("/sessions", sessions_list)
     app.router.add_get("/job/{job}", job_status)
-    cert = os.environ.get("CAPTION_CERT",
-                          os.path.expanduser("~/voice-svc/le/live/caption.example.com/fullchain.pem"))
-    key = os.environ.get("CAPTION_KEY",
-                         os.path.expanduser("~/voice-svc/le/live/caption.example.com/privkey.pem"))
+    # 证书路径只从环境读(secrets.env 注入),代码里不留任何域名 ——
+    # 从前默认值里写着真实域名,公开仓库时被脱敏成占位域名,于是仓库和服务器
+    # 永远差这几行、这个文件永远推不上去,每次改动都要在服务器上打补丁。
+    # 一次事故:整文件 scp 覆盖把占位域名推上生产,服务进了重启循环。
+    # 配置进环境后仓库文件 == 服务器文件,那整类问题从结构上消失。
+    cert = os.path.expanduser(os.environ.get("CAPTION_CERT", ""))
+    key = os.path.expanduser(os.environ.get("CAPTION_KEY", ""))
+    if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
+        raise SystemExit("缺少 TLS 证书：请在 secrets.env 里设置 CAPTION_CERT / CAPTION_KEY"
+                         f"（当前 CAPTION_CERT={cert or '未设置'}）")
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
     web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8443")), ssl_context=ctx)

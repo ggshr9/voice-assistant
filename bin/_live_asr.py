@@ -26,7 +26,7 @@ SR = 16000
 FRAME_MS = 30
 FRAME_BYTES = SR * FRAME_MS // 1000 * 2
 
-MAX_SPEECH = 12.0        # 一段最多攒这么久就断开——会议里有人一口气说两分钟很常见
+MAX_SPEECH = 12.0        # 一段最多攒这么久就断开(与 web/config.py 的 MAX_SEG_SEC 对齐)
 BLANK_WARN_AFTER = 3     # 连续几段都空白就提示可能没录上
 
 _BARS = "▁▂▃▄▅▆▇█"

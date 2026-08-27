@@ -1,5 +1,5 @@
 """实时 STT(faster-whisper / CUDA) + 翻译(litellm 网关)。"""
-import os, re, json, asyncio, urllib.request
+import os, re, sys, json, asyncio, urllib.request
 import numpy as np
 from config import LLM_URL, LLM_KEY, LLM_MODEL   # MODEL 已不再用:改 Qwen3-ASR 了
 
@@ -13,63 +13,29 @@ STT_LOCK = asyncio.Lock()   # 串行化 GPU 转写,避免并发会话同时调 m
 # 和【是否在原地打转】。
 # 整句就是这些 → 幻觉。刻意用【明确列表】而不是长度规则:
 # 中文的「好的」「对的」也是两个字,那是真话;英文两个字母才多半是语气填充。
-_HALLU = {
-    "you", "thank you", "thanks", ".", "", "请订阅", "谢谢观看", "字幕",
-    # whisper 在安静段落上最常吐的单词填充,单独成句时没有任何信息量
-    "so", "uh", "um", "mm", "hmm", "hm", "oh", "ah", "eh", "er",
-    "bye", "okay.", "the", "and",
-}
+# 幻觉判定与候选链语义在仓库根的共享模块(sync-web 推到服务器根,与 prompts.py 同机制)。
+# 曾各写一遍导致两端防线各缺一半、翻译死了一周(改一处漏两处)。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from noise_filter import is_noise, is_repetitive  # noqa: F401,E402
+from llm_chain import parse_chain, try_next_model  # noqa: E402
 
-# 出现即判定为幻觉的片段(这些是 whisper 训练集里的字幕/水印污染,真会议里不会说)
-_HALLU_SUBSTR = (
-    "优优独播剧场", "yoyo television", "请订阅", "谢谢观看", "谢谢大家观看",
-    "字幕由", "字幕组", "amara.org", "本字幕", "请不吝点赞", "订阅转发",
-    "打赏支持明镜", "明镜与点点栏目",
-)
+_try_next = try_next_model                       # 兼容旧名(内部引用与测试)
+
+
+def model_chain(spec=None):
+    """薄壳:链解析语义在 llm_chain.parse_chain(唯一一份)。"""
+    return parse_chain(LLM_MODEL if spec is None else spec)
+
 
 MIN_RMS = 0.004        # ≈-48dBFS。低于此不送模型 —— 静音正是幻觉的温床
 
 
 def rms(pcm):
-    """一段 int16 PCM 的 rms(0~1)。"""
+    """一段 int16 PCM 的 rms(0~1)。能量门是音频层的事,留在这里,不进 noise_filter。"""
     a = np.frombuffer(pcm, dtype="<i2").astype("float32") / 32768.0
     return float(np.sqrt((a * a).mean())) if a.size else 0.0
 
 
-# 判定「在原地打转」的门槛。**刻意定得保守**:
-# 误删真话的代价高于显示一行垃圾 —— 垃圾用户可以无视,删掉的话找不回来。
-# 血的教训:第一版设成「重复 3 次即判幻觉」,结果把用户真实说的
-# "Hello. Hello, hello, hello, hello."(他就是在连着打招呼)整条丢掉了。
-# 真正能区分「人在重复」和「模型跑飞」的不是次数,是**重复单元的长度**:
-# 人会把一个词连说几遍(「哈喽哈喽哈喽」「对对对对」),但不会把一个十几字的
-# 句子一字不差地连说四遍 —— 那只可能是生成循环。
-# 第二版把门槛设成「重复 5 次」,结果用户真的说了 5 声 hello,又被误杀了一次。
-MIN_REPS = 4          # 连续 4 段完全相同
-MIN_UNIT_LEN = 10     # 且单元长到是个「句子」而不是「词」
-
-
-def is_repetitive(text, min_reps=MIN_REPS, min_unit=MIN_UNIT_LEN):
-    """同一片段连续重复 ≥min_reps 次,且片段本身不短 → 模型在打转。
-
-    要抓的是 "I'm using a trombone." × 4 这类跑飞的生成循环,
-    不是 "哈喽，哈喽，哈喽" 这种真人真的会说的话。
-    """
-    t = text.strip()
-    if len(t) < min_unit * min_reps:
-        return False
-    # 整串就是同一个长片段的复读
-    for size in range(min_unit, len(t) // min_reps + 1):
-        unit = t[:size]
-        if unit.strip() and t.startswith(unit * min_reps):
-            return True
-    # 以标点切开后,连续 min_reps 句完全相同
-    parts = [p.strip() for p in re.split(r"[。.!！?？,，;；]+", t) if p.strip()]
-    if len(parts) >= min_reps:
-        for i in range(len(parts) - min_reps + 1):
-            win = parts[i:i + min_reps]
-            if len(set(win)) == 1 and len(win[0]) >= min_unit:
-                return True
-    return False
 
 # 实时字幕的模型。**2026-08-26 从 faster-whisper 换成 Qwen3-ASR** ——
 # 同一段真实录音上的实测对照:
@@ -106,33 +72,8 @@ def transcribe_pcm(pcm, lang=None):
     return model.transcribe(audio, lang)
 
 
-def is_noise(text):
-    c = text.strip().strip("。.,，!！?？ ").lower()
-    if (not c) or len(c) < 2 or c in _HALLU:
-        return True
-    if any(k in c for k in _HALLU_SUBSTR):
-        return True
-    return is_repetitive(c)
-
-
 _TRANS_SYS = ("你是同声传译。把这句话翻成简洁、口语化的简体中文,"
               "只输出译文本身,不要解释、不要原文、不要引号。")
-
-
-def model_chain(spec=None):
-    """CAPTION_LLM_MODEL 支持逗号分隔的候选链,前面的挂了自动退到后面。
-
-    **这里曾经是坏的**:minutes_lib 和 caption_core 都加过 fallback,唯独
-    实时字幕的 translate 还是单点 —— 于是配置改成 "Qwen3.6,qwen3.5-...,DeepSeek"
-    之后,它把整串当成一个模型名发出去,网关回 404,外语字幕的中文翻译全线不工作。
-    改一处漏两处比不改更糟:配置看起来是对的,功能却是死的。
-    """
-    out = []
-    for m in ((LLM_MODEL if spec is None else spec) or "").split(","):
-        m = m.strip()
-        if m and m not in out:
-            out.append(m)
-    return out or [""]
 
 
 def _headers():
@@ -140,20 +81,6 @@ def _headers():
     if LLM_KEY:
         h["Authorization"] = f"Bearer {LLM_KEY}"
     return h
-
-
-def _try_next(e):
-    """这个错误值不值得换下一个候选模型。
-
-    分界线是**错在模型上还是错在网关上**:
-      404 模型下线、429 限流、5xx 后端故障 —— 都是【这个模型】的问题,换一个很可能就好
-      连不上/DNS/超时                    —— 是【网关本身】的问题,再试几个只是白等
-    第一版只认 404,结果实测撞上 429 就整个放弃了,而换个模型立刻能用。
-    """
-    code = getattr(e, "code", None)
-    if code is not None:
-        return code in (404, 408, 409, 429) or code >= 500
-    return False           # 没有 HTTP 状态码 = 连接层面的问题,别再耗时间
 
 
 def translate(text, lang):

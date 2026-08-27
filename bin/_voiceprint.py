@@ -233,6 +233,7 @@ def save_registry(people, path=REGISTRY):
     Ctrl+C:注册表从 19970 字节变成 26 字节,全部声纹当场蒸发。
     （与索引、录音 m4a 是同一类错误:截断在先、内容在后。）
 
+    ⚠️ 本函数是 bin/_atomicio.py:atomic_write 的手抄副本 —— 改那边记得看这边。
     这里刻意不复用 _index.py 的同名工具:_voiceprint.py 会被 sync-web 推到
     服务器单独使用,跨文件 import 会在那边断掉。十行重复胜过一个易碎的依赖。
     """

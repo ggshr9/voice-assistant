@@ -7,6 +7,7 @@ import os, re, json, sys, time, string, urllib.request
 # dirname x3: web/meeting -> web -> voice-svc(本机则是仓库根),两边同一份代码都成立。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction
+from llm_chain import parse_chain  # noqa: E402  链解析语义唯一一份
 from collections import Counter
 
 LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
@@ -19,14 +20,8 @@ LLM_MODEL = os.environ.get("CAPTION_LLM_MODEL", "Qwen3.6")
 
 
 def model_chain(spec=None):
-    """把 CAPTION_LLM_MODEL 解析成候选列表,去重且保序。"""
-    raw = LLM_MODEL if spec is None else spec
-    out = []
-    for m in (raw or "").split(","):
-        m = m.strip()
-        if m and m not in out:
-            out.append(m)
-    return out
+    """薄壳:链解析语义在 llm_chain.parse_chain(唯一一份)。"""
+    return parse_chain(LLM_MODEL if spec is None else spec)
 
 
 def _call(model, system, user, max_tokens, temperature):

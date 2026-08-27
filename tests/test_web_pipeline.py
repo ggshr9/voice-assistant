@@ -142,9 +142,13 @@ class TestModelChain(unittest.TestCase):
         """重复候选会让失败时白等两轮重试。"""
         self.assertEqual(self.m.model_chain("A,B,A"), ["A", "B"])
 
-    def test_空配置不产生空候选(self):
+    def test_空配置给一个空串候选(self):
+        """契约已统一到 llm_chain.parse_chain:空配置 → [""]。
+        空串是合法的 model(有些端点忽略该字段),给空列表会导致一次都不尝试 ——
+        这条测试原先锁的是 minutes_lib 独立实现时的旧语义([]),三处合一后
+        以共享契约为准(stt 与 caption_core 的测试一直就是这么断言的)。"""
         for spec in ("", "   ", ",,,"):
-            self.assertEqual(self.m.model_chain(spec), [], f"{spec!r} 应得空列表")
+            self.assertEqual(self.m.model_chain(spec), [""], f"{spec!r}")
 
 
 class TestAskErrors(unittest.TestCase):
