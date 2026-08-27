@@ -626,3 +626,75 @@ test.describe('跨会议检索问答', () => {
     await expect(page.locator('#detailView')).toBeVisible({ timeout: 15000 });
   });
 });
+
+test.describe('暂停/继续（issue #1）', () => {
+  // 暂停的语义是**没录**:接电话是隐私场景,那几分钟的音频一个字节都不该离开本机。
+  async function armed(page) {
+    await enter(page);
+    await page.evaluate(() => {
+      window.__sent = [];
+      capturing = true; manualStop = false; retry = 0; capCh = 1;
+      paused = false; pausedTotal = 0; pausedAt = 0;
+      pcmQueue = []; pcmQueuedBytes = 0; pcmDroppedMs = 0;
+      $('pauseBtn').disabled = false;
+      ws = { readyState: 1, send: b => window.__sent.push(b.byteLength) };
+    });
+  }
+  const push = `(buf => { if(!paused) sendPcm(buf); })(new ArrayBuffer(3200))`;
+
+  test('暂停期间音频被丢弃——不发送也绝不进缓冲队列', async ({ page }) => {
+    await armed(page);
+    const r = await page.evaluate(([push]) => {
+      setPaused(true);
+      window.__sent = [];                       // 清掉冲句用的静音帧
+      for (let i = 0; i < 10; i++) eval(push);
+      return { sent: window.__sent.length, queued: pcmQueue.length };
+    }, [push]);
+    expect(r.sent, '暂停期间发出去了').toBe(0);
+    expect(r.queued, '暂停期间被攒进了缓冲——那等于还是录了').toBe(0);
+  });
+
+  test('暂停瞬间冲出 1 秒静音让在途半句定稿', async ({ page }) => {
+    await armed(page);
+    const n = await page.evaluate(() => { setPaused(true); return window.__sent.length; });
+    expect(n, '没有冲句静音,暂停前的半句会悬在服务端').toBeGreaterThanOrEqual(30);
+  });
+
+  test('恢复后继续发送', async ({ page }) => {
+    await armed(page);
+    const r = await page.evaluate(([push]) => {
+      setPaused(true); setPaused(false);
+      window.__sent = [];
+      for (let i = 0; i < 5; i++) eval(push);
+      return window.__sent.length;
+    }, [push]);
+    expect(r).toBe(5);
+  });
+
+  test('状态栏明示暂停,恢复后回到录制中', async ({ page }) => {
+    await armed(page);
+    await page.evaluate(() => setPaused(true));
+    await expect(page.locator('#st')).toContainText('暂停');
+    await expect(page.locator('#st'), '要说清后果').toContainText('不会被录制');
+    await page.evaluate(() => setPaused(false));
+    await expect(page.locator('#st')).toContainText('录制中');
+  });
+
+  test('暂停不触发麦克风静音误报', async ({ page }) => {
+    await armed(page);
+    await page.evaluate(() => {
+      micStream = { getAudioTracks: () => [{ label: '内建麦克风' }] };
+      setPaused(true);
+      startMeter({ fftSize: 256, getFloatTimeDomainData: b => b.fill(0) });
+      silentSince = Date.now() - 20000;          // 伪造已静音 20 秒
+    });
+    await page.waitForTimeout(600);
+    await expect(page.locator('#micName'), '暂停时零电平是预期,不该报设备故障')
+      .not.toHaveClass(/bad/);
+  });
+
+  test('未开录时暂停按钮不可用', async ({ page }) => {
+    await enter(page);
+    await expect(page.locator('#pauseBtn')).toBeDisabled();
+  });
+});

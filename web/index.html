@@ -318,6 +318,7 @@
       <div id="guide"></div>
       <div class="bar">
         <button class="btn" id="go">▶ 开始录制</button>
+        <button class="btn ghost" id="pauseBtn" disabled>⏸ 暂停</button>
         <button class="btn red" id="stop" disabled>■ 停止</button>
         <span class="sp"></span>
         <button class="btn ghost sm" id="capToggle">👁 字幕 开</button>
@@ -488,6 +489,34 @@ $('upfile').onchange=async()=>{
   if(d.error){ alert(d.error); return; }
   $('upfile').value=''; openDetail(d.id, d.job);
 };
+
+/* ---- 暂停/继续(issue #1) ----
+   暂停的语义是**没录**,不是攒着:接电话、临时离场是隐私场景,那几分钟的音频
+   一个字节都不该离开本机 —— 所以在采集回调处直接丢弃,绝不进断线缓冲队列。
+   服务端零改动:没有帧到达,VAD 状态冻结,录音文件里也没有这段(恢复后无缝续上)。
+   暂停瞬间先送 1 秒静音把说了一半的句子冲出去定稿 —— 否则暂停前的半句会
+   悬在服务端,恢复后跟无关的下文拼成一句。计时器同步冻结:显示时长要等于
+   实际录进去的时长,不然对不上。 */
+let paused=false, pausedTotal=0, pausedAt=0;
+function setPaused(on){
+  if(!capturing || paused===on) return;
+  paused=on;
+  const b=$('pauseBtn');
+  if(on){
+    // 冲掉在途的半句:1 秒零 PCM(分帧发,模拟正常节奏)
+    if(ws && ws.readyState===1){
+      const frame=new ArrayBuffer(960*2*(capCh||1));     // 30ms 一帧
+      for(let i=0;i<34;i++) ws.send(frame);
+    }
+    pausedAt=Date.now(); b.textContent='▶ 继续'; b.classList.add('red');
+    setStatus('warn','⏸ 已暂停 — 这期间的音频不会被录制');
+  }else{
+    pausedTotal+=Date.now()-pausedAt; pausedAt=0;
+    b.textContent='⏸ 暂停'; b.classList.remove('red');
+    setStatus('ok','录制中'); renderMicName();
+  }
+}
+$('pauseBtn').onclick=()=>setPaused(!paused);
 
 /* ---- 手记:录制中随手记,防抖自动保存;停止时强制落一次 ----
    保存走服务端(不是 localStorage):手记是用户唯一手打的东西,比转写更不可再生,
@@ -721,7 +750,8 @@ function startMeter(an){
 
     // 阈值取得很低(≈-72dB):安静房间的底噪也在这之上,真正的零才落到下面
     const now=Date.now();
-    if(rms > 0.00025){ silentSince = 0; if(micWarned){ micWarned=false; renderMicName(); } }
+    if(paused){ silentSince = 0; }                       // 暂停时零电平是预期,别报设备故障
+    else if(rms > 0.00025){ silentSince = 0; if(micWarned){ micWarned=false; renderMicName(); } }
     else {
       if(!silentSince) silentSince = now;
       else if(!micWarned && now - silentSince > SILENT_WARN_SEC*1000 && capturing){
@@ -818,6 +848,7 @@ $('go').onclick=async()=>{
     curSid=d.id;
   }catch(e){ alert('建会话失败：'+e); cleanup(); return; }
   capturing=true; manualStop=false; retry=0;
+  paused=false; $('pauseBtn').disabled=false; $('pauseBtn').textContent='⏸ 暂停'; $('pauseBtn').classList.remove('red');
   $('notesPane').style.display='block';        // 会话已建,手记可以开始记了
   $('go').disabled=true; $('stop').disabled=false;
   connectWS();
@@ -825,7 +856,7 @@ $('go').onclick=async()=>{
   const mute=audioCtx.createGain(); mute.gain.value=0;
   const meter=audioCtx.createAnalyser(); meter.fftSize=512;   // 输入音量条
   capCh = (srcs.tabStream && srcs.micStream) ? 2 : 1;        // 线上+麦克风 → 双声道分轨(L=对方,R=我)
-  proc=await makePcmNode(audioCtx, capCh, sendPcm);
+  proc=await makePcmNode(audioCtx, capCh, buf=>{ if(!paused) sendPcm(buf); });
   if(srcs.tabStream){                                  // 线上:标签页=对方
     const tn=audioCtx.createMediaStreamSource(srcs.tabStream); tn.connect(meter); nodes.push(tn);
     if(srcs.micStream){                                // 麦克风经回声闸门
@@ -904,9 +935,11 @@ function connectWS(){
 }
 
 /* ---- 计时 ---- */
-function startTimer(){ t0=Date.now(); $('liveView').classList.add('rec');
-  timerIv=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000);
-  $('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); },500); }
+function startTimer(){ t0=Date.now(); pausedTotal=0; pausedAt=0; $('liveView').classList.add('rec');
+  timerIv=setInterval(()=>{
+    const gone=pausedTotal+(pausedAt?Date.now()-pausedAt:0);   // 暂停的时间不计入
+    const s=Math.floor((Date.now()-t0-gone)/1000);
+    $('timer').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); },500); }
 function stopTimer(){ clearInterval(timerIv); }
 
 /* ---- 停止 ---- */
@@ -927,6 +960,7 @@ function waitWsClosed(ms){ return new Promise(res=>{   // 等服务端把尾句�
 async function stopAll(){
   if(!capturing){ cleanup(); return; }
   manualStop=true; capturing=false; stopTimer();
+  paused=false; $('pauseBtn').disabled=true; $('pauseBtn').textContent='⏸ 暂停'; $('pauseBtn').classList.remove('red');
   flushNotes();                                 // 最后几秒的输入别丢在防抖窗口里
   $('liveView').classList.remove('rec'); $('go').disabled=false; $('stop').disabled=true;
   setStatus('warn','收尾中…');
