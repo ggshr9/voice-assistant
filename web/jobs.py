@@ -55,6 +55,9 @@ async def run_meeting_job(job, audio, outdir, lang, me):
         if os.path.exists(m) and os.path.exists(r):
             JOBS[job]["minutes"] = open(m, encoding="utf-8").read()
             JOBS[job]["record"] = open(r, encoding="utf-8").read()
+            ep = os.path.join(outdir, "增强笔记.md")
+            if os.path.exists(ep):                   # 有手记才有这份,可选
+                JOBS[job]["enhanced"] = open(ep, encoding="utf-8").read()
             try:                        # 删 pipeline 中间产物 audio.wav(大),录音已另存 opus
                 os.remove(os.path.join(outdir, "audio.wav"))
             except OSError:

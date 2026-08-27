@@ -6,7 +6,7 @@ import os, re, json, sys, time, string, urllib.request
 # 真源在仓库根 prompts.py,由 sync-web 推到 ~/voice-svc/prompts.py。
 # dirname x3: web/meeting -> web -> voice-svc(本机则是仓库根),两边同一份代码都成立。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, me_instruction
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction
 from collections import Counter
 
 LLM_URL = os.environ.get("CAPTION_LLM_URL", "")   # 必须显式配置(线上由 secrets.env 注入)
@@ -147,6 +147,26 @@ def make_minutes(text, me=None, log=print):
         log(f"纪要块 {i}/{len(chunks)}")
         notes.append(f"【片段{i}】\n" + ask(NOTE_SYS, c, 1200))
     return ask(sysmsg, "以下是按时间顺序的要点笔记,汇总成完整纪要:\n\n" + "\n\n".join(notes), 2600)
+
+
+def make_enhanced(notes, text, log=print):
+    """增强笔记:用户手记为骨架,转写为血肉。
+
+    与 make_minutes 是两种产物 —— 那个是 AI 从零写的纪要,这个是**用户自己的笔记**
+    被补全后的样子(Granola 式)。铁律在 ENHANCE_SYS 里:不改用户的结构和措辞。
+    转写太长时只压转写、不动笔记:笔记是主角,一个字都不能丢。
+    """
+    notes = (notes or "").strip()
+    if not notes:
+        return ""
+    ctx = text
+    if len(ctx) > 12000:                      # 超长会议:先把转写压成要点当上下文
+        log("增强笔记:转写过长,先压缩")
+        chunks = split_chunks(ctx, 12000)
+        ctx = "\n\n".join(ask(NOTE_SYS, c, 1200) for c in chunks)
+    log("增强笔记:合并手记与转写")
+    return ask(ENHANCE_SYS,
+               f"【用户手记】\n{notes}\n\n【会议转写】\n{ctx}", 3000)
 
 
 # ---------- 会议记录(忠实还原)----------

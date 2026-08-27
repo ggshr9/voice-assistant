@@ -534,3 +534,58 @@ test.describe('麦克风选择与开录前试音', () => {
     expect(p, '探测失败应放行 —— 宁可放行也别把能用的流程堵死').toBeGreaterThan(0.0008);
   });
 });
+
+test.describe('手记 × 转写合并（Granola 式）', () => {
+  const FIXTURE = process.env.CAPTION_FIXTURE;
+  test.skip(!FIXTURE, 'CAPTION_FIXTURE 未设置');
+
+  test.afterEach(async ({ page }) => {
+    await page.evaluate(async (pw) => {
+      const r = await fetch('/sessions?pw=' + encodeURIComponent(pw)).then(r => r.json()).catch(() => ({}));
+      for (const s of (r.sessions || r || []))
+        if (typeof s?.title === 'string' && s.title.startsWith('E2E'))
+          await fetch('/session/' + encodeURIComponent(s.id) + '/delete?pw=' + encodeURIComponent(pw), { method: 'POST' }).catch(() => {});
+    }, PW);
+  });
+
+  test('notes 接口无口令被拒且不泄漏会话存在性', async ({ page }) => {
+    await page.goto(URL, { waitUntil: 'domcontentloaded' });
+    const r = await page.evaluate(async () => {
+      const a = await fetch('/session/真实不存在的id/notes', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'x' }) });
+      return a.status;
+    });
+    expect(r, '无口令必须 403（404 会泄漏会话是否存在）').toBe(403);
+  });
+
+  test('手记保存 → 详情页可见可编辑 → 重新生成出增强笔记', async ({ page }) => {
+    test.setTimeout(10 * 60 * 1000);
+    // 1) 上传建会话（自动出纪要）
+    await enter(page);
+    await page.fill('#title', 'E2E手记_' + Date.now());
+    await page.setInputFiles('#upfile', FIXTURE);
+    await expect(page.locator('#detailView')).toBeVisible({ timeout: 120000 });
+    await expect(page.locator('#minutesCard')).toBeVisible({ timeout: 9 * 60 * 1000 });
+    const sid = await page.evaluate(() => curSid);
+
+    // 2) 会后补写手记（走接口，等价于详情页编辑）
+    const note = '- 缓存定了用 Redis\n- 压测口径待确认XYZZY';
+    const ok = await page.evaluate(async ([sid, pw, note]) => {
+      const r = await fetch('/session/' + encodeURIComponent(sid) + '/notes', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pw, text: note }) });
+      return (await r.json()).ok === true;
+    }, [sid, PW, note]);
+    expect(ok, '手记保存失败').toBe(true);
+
+    // 3) 刷新详情:手记卡可见且内容在
+    await page.evaluate((sid) => openDetail(sid), sid);
+    await expect(page.locator('#notesCard')).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('#dNotesTa')).toHaveValue(/XYZZY/);
+
+    // 4) 重新生成 → 增强笔记卡出现,且保留了用户原话（骨架不许改写）
+    await page.getByRole('button', { name: /重新生成/ }).click();
+    await expect(page.locator('#enhancedCard')).toBeVisible({ timeout: 9 * 60 * 1000 });
+    await expect(page.locator('#ed'), '用户手记的原话必须保留在增强笔记里')
+      .toContainText('XYZZY', { timeout: 30000 });
+  });
+});

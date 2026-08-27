@@ -337,6 +337,7 @@ async def job_status(request):
         return web.json_response({"error": "无此任务"}, status=404)
     return web.json_response({"all": j["progress"], "done": j["done"],
                               "minutes": j.get("minutes"), "record": j.get("record"),
+                              "enhanced": j.get("enhanced"),
                               "error": j.get("error")})
 
 
@@ -393,6 +394,31 @@ async def session_upload(request):
 
 
 # ---------- 会议库 ----------
+async def session_notes(request):
+    """保存用户手记(录制中自动保存,会后也可改)。
+
+    口令在查会话之前 —— 404/403 的差别会向未鉴权者泄漏会话存不存在(session_minutes
+    犯过同样的错)。写入走 tmp+replace:自动保存每几秒打一次,截断式写法碰上
+    刷新/断电就把笔记清空了,而那是用户唯一手打的东西,比转写更不可再生。
+    """
+    body = await request.json() if request.can_read_body else {}
+    if not check_pw(body.get("pw", "") or request.query.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
+    d = sess_dir(request.match_info["id"])
+    if not d:
+        return web.json_response({"error": "无此会议"}, status=404)
+    text = body.get("text", "")
+    if not isinstance(text, str):
+        return web.json_response({"error": "text 需要字符串"}, status=400)
+    if len(text) > 1_000_000:
+        return web.json_response({"error": "笔记过大"}, status=413)
+    tmp = os.path.join(d, ".notes.md.part")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, os.path.join(d, "notes.md"))
+    return web.json_response({"ok": True, "chars": len(text)})
+
+
 async def sessions_list(request):
     if not check_pw(request.query.get("pw", "")):
         return web.json_response({"error": "口令错误"}, status=403)
@@ -430,6 +456,7 @@ async def session_get(request):
     rec = recording_path(d)
     return web.json_response({"meta": m, "live": live,
                               "minutes": _read("会议纪要.md"), "record": _read("会议记录.md"),
+                              "notes": _read("notes.md"), "enhanced": _read("增强笔记.md"),
                               "has_audio": rec is not None,
                               "audio_name": os.path.basename(rec) if rec else None,
                               "has_pcm": os.path.exists(os.path.join(d, "recording.pcm"))})
@@ -458,6 +485,7 @@ def main():
     app.router.add_post("/session/{id}/finish", session_finish)
     app.router.add_post("/session/{id}/rename", session_rename)
     app.router.add_post("/session/{id}/minutes", session_minutes)
+    app.router.add_post("/session/{id}/notes", session_notes)
     app.router.add_post("/session/{id}/delete", session_delete)
     app.router.add_get("/session/{id}/audio", session_audio)
     app.router.add_get("/session/{id}", session_get)

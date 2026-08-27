@@ -25,7 +25,7 @@ import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
 # 两边曾各存各的,实测 FINAL_SYS 已漂移到只剩 66% 相似。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, me_instruction
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction
 from _atomicio import atomic_write
 
 API = "http://127.0.0.1:8080/v1/chat/completions"
@@ -324,13 +324,17 @@ def main():
     if not args or args[0] in ("-h", "--help"):
         print(__doc__); sys.exit(0)
     # 先抽出带值的 --me（否则它的值会被当成位置参数 / 转写目录）
-    me, rest, i = None, [], 0
+    me, notes_path, rest, i = None, None, [], 0
     while i < len(args):
         a = args[i]
         if a == "--me":
             i += 1; me = args[i] if i < len(args) else None
         elif a.startswith("--me="):
             me = a.split("=", 1)[1]
+        elif a == "--notes":
+            i += 1; notes_path = args[i] if i < len(args) else None
+        elif a.startswith("--notes="):
+            notes_path = a.split("=", 1)[1]
         else:
             rest.append(a)
         i += 1
@@ -338,7 +342,7 @@ def main():
     flags = {a for a in args if a.startswith("--")}
     pos = [a for a in args if not a.startswith("--")]
     if not pos:
-        log("用法: minutes <转写目录|.txt|.json> [--say] [--open]"); sys.exit(1)
+        log("用法: minutes <转写目录|.txt|.json> [--notes 手记.md] [--say] [--open]"); sys.exit(1)
     target = os.path.expanduser(pos[0])
 
     text, src = find_transcript(target)
@@ -367,6 +371,22 @@ def main():
     log("@@STAGE done")
     log("✅ 纪要已生成:")
     print(out)
+
+    # 会中手记 → 增强笔记(用户笔记为骨架,转写补全;与网页版共用 ENHANCE_SYS)
+    if not notes_path:                          # 不传参也认目录里的 notes.md
+        cand = os.path.join(base_dir, "notes.md")
+        notes_path = cand if os.path.exists(cand) else None
+    if notes_path:
+        user_notes = open(os.path.expanduser(notes_path), encoding="utf-8").read().strip()
+        if user_notes:
+            log("📝 检测到会中手记，生成增强笔记 …")
+            enhanced = ask(ENHANCE_SYS,
+                           f"【用户手记】\n{user_notes}\n\n【会议转写】\n{text}", 3000)
+            e_out = os.path.join(base_dir, f"增强笔记_{name}.md")
+            atomic_write(e_out, f"# 增强笔记 · {name}\n\n> 你的手记为骨架，转写补全　|　"
+                                f"⚠️ 与转写矛盾处已就地标注\n\n" + enhanced + "\n")
+            log("✅ 增强笔记已生成:")
+            print(e_out)
 
     # 会议记录（LLM 忠实还原全程对话）；--norecord 跳过
     rec_out = None

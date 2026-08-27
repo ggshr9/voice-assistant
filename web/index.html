@@ -170,6 +170,13 @@
   #prog2{font-family:var(--mono);white-space:pre-wrap;font-size:12px;color:var(--faint);line-height:1.7;margin-top:10px}
 
   /* 文档卡 */
+  #notesPane{margin-top:14px}
+  .notes-head{display:flex;align-items:center;gap:10px;font-size:14px;margin-bottom:8px}
+  #notesTa,.notes-detail{width:100%;min-height:110px;resize:vertical;border-radius:10px;
+    border:1px solid var(--border);background:var(--card);color:var(--fg);
+    padding:12px 14px;font:inherit;font-size:14px;line-height:1.7;box-sizing:border-box}
+  #notesTa:focus,.notes-detail:focus{outline:none;border-color:var(--ring)}
+  .notes-detail{margin:0;border:none;border-radius:0;min-height:140px}
   .doc-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:16px}
   .doc-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border-soft);font-size:13.5px}
   .doc-head b{font-weight:600}
@@ -304,6 +311,10 @@
         停止后点「生成会议纪要」会重新完整转写（含分人、去噪），那才是最终质量。</div>
       <div id="hist"></div>
       <div id="capOff">🔇 字幕已关 · 仍在录音与实时转写，记录照常保存</div>
+      <div id="notesPane" style="display:none">
+        <div class="notes-head"><b>📝 我的手记</b><span class="tagdim">会后 AI 用转写补全成完整笔记</span><span class="sp"></span><span class="muted" id="notesSt"></span></div>
+        <textarea id="notesTa" placeholder="随手记要点就行：碎片、缩写、半句话都可以。&#10;停止后生成纪要时，会以这些为骨架、用转写补全成「增强笔记」。"></textarea>
+      </div>
       <div id="afterStop" style="display:none">
         <button class="btn ghost" id="viewBtn">📄 查看记录</button>
         <button class="btn" id="genBtn">✨ 生成会议纪要</button>
@@ -323,6 +334,18 @@
         <div class="gen-eta"><span id="genEta"></span><span class="sp"></span><span id="genElapsed" class="mono"></span></div>
         <div class="gen-track"><div class="gen-fill" id="genFill"></div></div>
         <div id="prog2"></div>
+      </div>
+
+      <div id="enhancedCard" class="doc-card" style="display:none">
+        <div class="doc-head"><b>📝 增强笔记</b><span class="tagdim">你的手记 × 转写补全</span><span class="sp"></span>
+          <button class="btn ghost sm" id="copyE">复制</button><button class="btn green sm" id="dle">下载</button></div>
+        <div class="doc-body md" id="ed"></div>
+      </div>
+
+      <div id="notesCard" class="doc-card" style="display:none">
+        <div class="doc-head"><b>✏️ 会中手记</b><span class="tagdim">可继续修改</span><span class="sp"></span>
+          <span class="muted" id="dNotesSt"></span><button class="btn ghost sm" id="saveNotes">保存</button></div>
+        <textarea id="dNotesTa" class="notes-detail"></textarea>
       </div>
 
       <div id="minutesCard" class="doc-card" style="display:none">
@@ -424,9 +447,36 @@ $('upfile').onchange=async()=>{
   $('upfile').value=''; openDetail(d.id, d.job);
 };
 
+/* ---- 手记:录制中随手记,防抖自动保存;停止时强制落一次 ----
+   保存走服务端(不是 localStorage):手记是用户唯一手打的东西,比转写更不可再生,
+   换设备/清缓存都不能丢。防抖 2s,失败在状态里明说并保留重试。 */
+let notesTimer=null, notesDirty=false;
+async function saveNotes(sid, ta, st){
+  if(!sid) return;
+  const text=ta.value;
+  try{
+    const r=await(await fetch('/session/'+encodeURIComponent(sid)+'/notes',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({pw,text})})).json();
+    if(r.error){ st.textContent='保存失败：'+r.error; return false; }
+    notesDirty=false;
+    st.textContent=text.trim()?('已保存 '+new Date().toLocaleTimeString('zh',{hour12:false})):'';
+    return true;
+  }catch(e){ st.textContent='保存失败，将自动重试'; return false; }
+}
+$('notesTa').addEventListener('input',()=>{
+  notesDirty=true; $('notesSt').textContent='输入中…';
+  if(notesTimer) clearTimeout(notesTimer);
+  notesTimer=setTimeout(()=>saveNotes(curSid,$('notesTa'),$('notesSt')),2000);
+});
+async function flushNotes(){        // 停止录制时同步落盘,别让最后几秒的输入丢在防抖窗口里
+  if(notesTimer){ clearTimeout(notesTimer); notesTimer=null; }
+  if(notesDirty) await saveNotes(curSid,$('notesTa'),$('notesSt'));
+}
+
 /* ---- 进入实时页(会话在采集成功后才建,避免没麦克风等失败留下空"录制中") ---- */
 $('startBtn').onclick=()=>{
   curSid=null; $('hist').innerHTML=''; showCur('','字幕会显示在这里…');
+  $('notesPane').style.display='none'; $('notesTa').value=''; $('notesSt').textContent=''; notesDirty=false;
   $('afterStop').style.display='none'; $('prog').textContent=''; $('genBtn').disabled=false;
   $('liveView').classList.remove('rec','nocap'); $('capToggle').textContent='👁 字幕 开';
   $('guide').innerHTML = scene==='线上'
@@ -726,6 +776,7 @@ $('go').onclick=async()=>{
     curSid=d.id;
   }catch(e){ alert('建会话失败：'+e); cleanup(); return; }
   capturing=true; manualStop=false; retry=0;
+  $('notesPane').style.display='block';        // 会话已建,手记可以开始记了
   $('go').disabled=true; $('stop').disabled=false;
   connectWS();
   audioCtx=new AudioContext({sampleRate:16000});
@@ -834,6 +885,7 @@ function waitWsClosed(ms){ return new Promise(res=>{   // 等服务端把尾句�
 async function stopAll(){
   if(!capturing){ cleanup(); return; }
   manualStop=true; capturing=false; stopTimer();
+  flushNotes();                                 // 最后几秒的输入别丢在防抖窗口里
   $('liveView').classList.remove('rec'); $('go').disabled=false; $('stop').disabled=true;
   setStatus('warn','收尾中…');
   stopAudio();                                  // 先停采集,但保留 ws 接收最后一句
@@ -919,8 +971,8 @@ async function openDetail(id, job){
   if(genTimer){ clearInterval(genTimer); genTimer=null; }
   if(detailPoll){ clearInterval(detailPoll); detailPoll=null; }
   if(genPoll){ clearInterval(genPoll); genPoll=null; }
-  for(const x of ['genCard','minutesCard','compare','compareHead']) $(x).style.display='none';
-  $('replay').innerHTML=''; $('md').innerHTML=''; $('rd').innerHTML=''; $('prog2').textContent=''; $('dActions').innerHTML='';
+  for(const x of ['genCard','minutesCard','enhancedCard','notesCard','compare','compareHead']) $(x).style.display='none';
+  $('replay').innerHTML=''; $('md').innerHTML=''; $('rd').innerHTML=''; $('ed').innerHTML=''; $('prog2').textContent=''; $('dActions').innerHTML='';
   const d=await(await fetch('/session/'+encodeURIComponent(id)+'?pw='+encodeURIComponent(pw))).json();
   if(d.error){ alert(d.error); return; }
   const m=d.meta||{};
@@ -937,8 +989,12 @@ async function openDetail(id, job){
     $('dActions').appendChild(fin);
   }
   if(d.has_audio){ const a=document.createElement('a'); a.className='btn outline sm'; a.href='/session/'+encodeURIComponent(id)+'/audio?pw='+encodeURIComponent(pw); const ext=(d.audio_name||'recording.wav').split('.').pop(); a.textContent='⬇ 下载录音'; a.download=(m.title||id)+'.'+ext; $('dActions').appendChild(a); }
-  if(!d.minutes && !job && m.status!=='processing' && m.status!=='recording' && (d.has_audio || m.scene==='上传')){
-    const g=document.createElement('button'); g.className='btn'; g.textContent='✨ 生成会议纪要';
+  if(!job && m.status!=='processing' && m.status!=='recording' && (d.has_audio || m.scene==='上传')){
+    // 没纪要 → 主按钮;已有纪要 → 弱化的「重新生成」。后者是增强笔记的入口:
+    // 会后补写/修改手记之后,必须能重跑一次才能拿到合并结果。
+    const g=document.createElement('button');
+    g.className=d.minutes?'btn ghost sm':'btn';
+    g.textContent=d.minutes?'↻ 重新生成（含手记合并）':'✨ 生成会议纪要';
     g.onclick=()=>{ g.disabled=true; startMinutes(id); }; $('dActions').appendChild(g);
   }
   const ren=document.createElement('button'); ren.className='btn ghost sm'; ren.textContent='✎ 改名';
@@ -960,6 +1016,17 @@ async function openDetail(id, job){
       try{ const dd=await(await fetch('/session/'+encodeURIComponent(id)+'?pw='+encodeURIComponent(pw))).json();
         if(dd.minutes || (dd.meta && dd.meta.status!=='processing')){ clearInterval(detailPoll); detailPoll=null; openDetail(id); }
       }catch(e){} },3000); }
+  // 增强笔记(用户手记 × 转写):排在纪要前 —— 用户自己的笔记优先于 AI 的
+  if(d.enhanced){ $('enhancedCard').style.display='block'; $('ed').innerHTML=mdToHtml(d.enhanced);
+    $('dle').onclick=()=>dl('增强笔记.md',d.enhanced);
+    $('copyE').onclick=()=>{ try{navigator.clipboard.writeText(d.enhanced); $('copyE').textContent='已复制'; setTimeout(()=>$('copyE').textContent='复制',1200);}catch(e){} }; }
+  // 会中手记:有就展示可编辑;改完保存,重新生成纪要会重新出增强笔记
+  if((d.notes!=null && d.notes!=='') || d.has_audio){
+    $('notesCard').style.display='block'; $('dNotesTa').value=d.notes||''; $('dNotesSt').textContent='';
+    $('dNotesTa').placeholder='会后也可以补写要点，保存后点「↻ 重新生成」即可得到增强笔记。';
+    $('saveNotes').onclick=async()=>{ $('saveNotes').disabled=true;
+      await saveNotes(id,$('dNotesTa'),$('dNotesSt')); $('saveNotes').disabled=false; };
+  }
   // 会议纪要
   if(d.minutes){ $('minutesCard').style.display='block'; $('md').innerHTML=mdToHtml(d.minutes);
     $('dlm').onclick=()=>dl('会议纪要.md',d.minutes);

@@ -72,8 +72,20 @@ def run(audio, outdir, me=None, lang="zh", log=print):
     record = minutes_lib.make_record(text, log)
     open(os.path.join(outdir, "会议记录.md"), "w", encoding="utf-8").write(record)
 
+    # 用户开会时记了手记 → 多产出一份「增强笔记」(用户笔记为骨架,转写补全)
+    enhanced = ""
+    notes_p = os.path.join(outdir, "notes.md")
+    if os.path.exists(notes_p):
+        user_notes = open(notes_p, encoding="utf-8").read()
+        if user_notes.strip():
+            enhanced = minutes_lib.make_enhanced(user_notes, text, log)
+            if enhanced:
+                tmp = os.path.join(outdir, ".增强笔记.md.part")
+                open(tmp, "w", encoding="utf-8").write(enhanced)
+                os.replace(tmp, os.path.join(outdir, "增强笔记.md"))
+
     log("完成")
-    return {"speakers": nspk, "minutes": minutes, "record": record}
+    return {"speakers": nspk, "minutes": minutes, "record": record, "enhanced": enhanced}
 
 
 if __name__ == "__main__":

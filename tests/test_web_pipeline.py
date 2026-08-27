@@ -429,5 +429,83 @@ class TestSttDelegates(unittest.TestCase):
         self.assertEqual(m.transcribe_pcm(b"\x00" * 32000, "zh"), ("", "zh"))
 
 
+class TestMakeEnhanced(unittest.TestCase):
+    """增强笔记:用户手记为骨架,转写为血肉(Granola 式)。
+
+    与 make_minutes 是两种产物 —— 那个是 AI 从零写的,这个是用户自己的笔记
+    被补全后的样子。契约的关键:笔记一个字都不能丢在压缩里。
+    """
+
+    def setUp(self):
+        self.m = load_minutes_lib()
+        self._orig = self.m.ask
+        self.calls = []
+        self.m.ask = lambda sysmsg, user, *a, **k: (self.calls.append((sysmsg, user)) or "增强结果")
+
+    def tearDown(self):
+        self.m.ask = self._orig
+
+    def test_没有手记直接返回空_不烧LLM(self):
+        for empty in ("", "   ", None, "\n\n"):
+            self.assertEqual(self.m.make_enhanced(empty, "转写", log=lambda *a: None), "")
+        self.assertEqual(self.calls, [], "空手记不该调 LLM")
+
+    def test_手记和转写都进了prompt(self):
+        self.m.make_enhanced("- 定了用Redis", "说话人A：那就定 Redis", log=lambda *a: None)
+        sysmsg, user = self.calls[-1]
+        self.assertIn("骨架", sysmsg, "要用 ENHANCE_SYS 而不是别的 prompt")
+        self.assertIn("定了用Redis", user)
+        self.assertIn("那就定 Redis", user)
+
+    def test_超长转写被压缩但手记原样保留(self):
+        """笔记是主角:压缩只能压转写,笔记一个字不能少。"""
+        notes = "- 我记的独特要点ABC"
+        self.m.make_enhanced(notes, "长" * 30000, log=lambda *a: None)
+        final_user = self.calls[-1][1]
+        self.assertIn(notes, final_user, "手记在压缩中丢了")
+        self.assertLess(len(final_user), 25000, "转写没被压缩,会撑爆上下文")
+
+    def test_正常长度不压缩_一次调用(self):
+        self.m.make_enhanced("- 要点", "短转写", log=lambda *a: None)
+        self.assertEqual(len(self.calls), 1, "不超长不该多跑压缩步")
+
+
+class TestNotesEndpointSource(unittest.TestCase):
+    """notes 接口的两条源码级不变量(与 session_minutes 的教训同款)。"""
+
+    def setUp(self):
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = src.index("async def session_notes")
+        self.body = src[i:src.index("\nasync def", i + 10)]
+
+    def test_口令校验在查会话之前(self):
+        """404/403 的差别会向未鉴权者泄漏会话存不存在 —— session_minutes 犯过。"""
+        self.assertLess(self.body.index("check_pw"), self.body.index("sess_dir"))
+
+    def test_写入是原子的(self):
+        """手记是用户唯一手打的东西,比转写更不可再生;自动保存每几秒打一次,
+        截断式写法碰上刷新/断电就把笔记清空了。"""
+        self.assertIn("os.replace", self.body)
+        self.assertLess(self.body.index('".notes.md.part"'), self.body.index("os.replace"))
+
+    def test_有大小上限(self):
+        self.assertIn("413", self.body)
+
+
+class TestPipelineWritesEnhanced(unittest.TestCase):
+    """有 notes.md 才产出增强笔记;没有则完全不碰这条路。"""
+
+    def setUp(self):
+        self.p = load_pipeline()
+        self.src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
+
+    def test_产物写入是原子的(self):
+        i = self.src.index('".增强笔记.md.part"')
+        self.assertLess(i, self.src.index('os.replace(tmp, os.path.join(outdir, "增强笔记.md"))'))
+
+    def test_返回值带enhanced字段(self):
+        self.assertIn('"enhanced": enhanced', self.src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
