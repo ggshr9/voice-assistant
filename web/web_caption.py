@@ -176,8 +176,35 @@ async def ws_handler(request):
     drafter = asyncio.create_task(drafter_task())
     try:
         async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:   # 客户端"音频发完了"(停止录制)→ 跳出去收尾尾句
-                break
+            if msg.type == web.WSMsgType.TEXT:
+                # 控制消息:pause / resume / eof。暂停的音频丢弃发生在【前端采集端】
+                # (隐私:那几分钟一个字节都不离开用户机器),服务端只负责两件事 ——
+                # 把在途半句定稿(从前靠前端伪造 1 秒静音顶,现在是正经控制流),
+                # 和把暂停区间记进 meta(墙钟时间轴的 ground truth:录音里暂停段
+                # 是无缝拼接的,不记下来,音频时间和墙钟时间就永远对不上了)。
+                try:
+                    ctrl = json.loads(msg.data)
+                except Exception:                # noqa: BLE001
+                    ctrl = {}
+                if ctrl.get("pause"):
+                    if triggered and nspeech * 0.03 >= MIN_SPEECH:
+                        seg_q.put_nowait((cur_sid, bytes(seg)))   # 半句定稿,别悬着
+                    triggered, silence, nspeech, since_partial = False, 0.0, 0, 0
+                    seg, buf = bytearray(), bytearray()
+                    if d:
+                        m = read_meta(d) or {}
+                        m.setdefault("pause_spans", []).append([time.time(), None])
+                        write_meta(d, m)
+                    continue
+                if ctrl.get("resume"):
+                    if d:
+                        m = read_meta(d) or {}
+                        spans = m.get("pause_spans") or []
+                        if spans and spans[-1][1] is None:
+                            spans[-1][1] = time.time()
+                            write_meta(d, m)
+                    continue
+                break                            # eof(停止录制)→ 跳出去收尾尾句
             if msg.type != web.WSMsgType.BINARY:
                 continue
             if pcm_f:                       # 整段录音边收边写(可能是双声道交织)
@@ -220,6 +247,12 @@ async def ws_handler(request):
                         else:
                             triggered, silence, nspeech = False, 0.0, 0
     finally:
+        if d:                                  # 暂停中直接点了停止 → 悬空的暂停区间在此闭合
+            m = read_meta(d) or {}
+            spans = m.get("pause_spans") or []
+            if spans and spans[-1][1] is None:
+                spans[-1][1] = time.time()
+                write_meta(d, m)
         if triggered and nspeech * 0.03 >= MIN_SPEECH:   # 收尾:停止时没等到静音的最后一句也补上
             seg_q.put_nowait((cur_sid, bytes(seg)))
         seg_q.put_nowait(None)                            # 让消费者把剩余队列处理完再退出

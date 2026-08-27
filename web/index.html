@@ -503,14 +503,14 @@ function setPaused(on){
   paused=on;
   const b=$('pauseBtn');
   if(on){
-    // 冲掉在途的半句:1 秒零 PCM(分帧发,模拟正常节奏)
-    if(ws && ws.readyState===1){
-      const frame=new ArrayBuffer(960*2*(capCh||1));     // 30ms 一帧
-      for(let i=0;i<34;i++) ws.send(frame);
-    }
+    // 控制帧让服务端把在途半句定稿并记下暂停区间(墙钟时间轴的 ground truth)。
+    // 第一版是往流里塞 1 秒伪造静音顶事 —— 每次暂停录音里就多 1 秒无中生有的
+    // 音频,且服务端对「暂停发生过」一无所知,音频时间和墙钟时间从此对不上。
+    if(ws && ws.readyState===1) ws.send(JSON.stringify({pause:1}));
     pausedAt=Date.now(); b.textContent='▶ 继续'; b.classList.add('red');
     setStatus('warn','⏸ 已暂停 — 这期间的音频不会被录制');
   }else{
+    if(ws && ws.readyState===1) ws.send(JSON.stringify({resume:1}));
     pausedTotal+=Date.now()-pausedAt; pausedAt=0;
     b.textContent='⏸ 暂停'; b.classList.remove('red');
     setStatus('ok','录制中'); renderMicName();

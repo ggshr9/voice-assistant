@@ -604,5 +604,38 @@ class TestAskEndpointSource(unittest.TestCase):
         self.assertIn("413", self.body)
 
 
+class TestPauseProtocol(unittest.TestCase):
+    """暂停控制流的三条源码级不变量(issue #1 的彻底方案)。"""
+
+    def setUp(self):
+        self.src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = self.src.index("async def ws_handler")
+        self.body = self.src[i:self.src.index("\nasync def", i + 10)]
+
+    def test_pause先定稿在途半句再清状态(self):
+        """顺序错了半句就丢了:必须先 seg_q.put 再清 seg。"""
+        i = self.body.index('ctrl.get("pause")')
+        blk = self.body[i:self.body.index('ctrl.get("resume")')]
+        self.assertIn("seg_q.put_nowait", blk, "暂停时在途半句没定稿")
+        self.assertLess(blk.index("seg_q.put_nowait"), blk.index("seg, buf = bytearray()"),
+                        "先清了 seg 再定稿 —— 半句已经没了")
+
+    def test_暂停区间写进meta(self):
+        self.assertIn("pause_spans", self.body, "暂停发生过这件事必须留痕:录音里是无缝的,"
+                                                "不记 meta,音频/墙钟时间轴永远对不上")
+
+    def test_暂停中直接停止时悬空区间闭合(self):
+        """finally 里要把 [start, None] 补上终点,否则时长统计会算出负数/None。"""
+        i = self.body.index("finally:")
+        self.assertIn("pause_spans", self.body[i:], "收尾没闭合悬空的暂停区间")
+
+    def test_未知文本消息仍走停止_向后兼容(self):
+        """旧前端只发 {eof:1}:新服务端对认不出的文本必须还是 break(收尾),
+        否则旧页面点停止会卡住。"""
+        i = self.body.index('ctrl.get("resume")')
+        tail = self.body[i:self.body.index("if msg.type != web.WSMsgType.BINARY")]
+        self.assertIn("break", tail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

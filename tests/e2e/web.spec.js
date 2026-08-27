@@ -646,7 +646,7 @@ test.describe('暂停/继续（issue #1）', () => {
     await armed(page);
     const r = await page.evaluate(([push]) => {
       setPaused(true);
-      window.__sent = [];                       // 清掉冲句用的静音帧
+      window.__sent = [];                       // 清掉 pause 控制帧
       for (let i = 0; i < 10; i++) eval(push);
       return { sent: window.__sent.length, queued: pcmQueue.length };
     }, [push]);
@@ -654,10 +654,21 @@ test.describe('暂停/继续（issue #1）', () => {
     expect(r.queued, '暂停期间被攒进了缓冲——那等于还是录了').toBe(0);
   });
 
-  test('暂停瞬间冲出 1 秒静音让在途半句定稿', async ({ page }) => {
+  test('暂停/恢复各发一个控制帧(不再伪造静音)', async ({ page }) => {
+    // 第一版靠塞 1 秒零 PCM 冲句 —— 每次暂停录音里多 1 秒无中生有的音频,
+    // 且服务端不知道暂停发生过,音频/墙钟两条时间轴对不上。
+    // 现在的契约:pause/resume 各一个 JSON 文本帧,定稿与 pause_spans 由服务端做。
     await armed(page);
-    const n = await page.evaluate(() => { setPaused(true); return window.__sent.length; });
-    expect(n, '没有冲句静音,暂停前的半句会悬在服务端').toBeGreaterThanOrEqual(30);
+    const r = await page.evaluate(() => {
+      const texts = [], bins = [];
+      ws.send = m => (typeof m === 'string' ? texts : bins).push(m);
+      setPaused(true); setPaused(false);
+      return { texts, bins: bins.length };
+    });
+    expect(r.bins, '不该再发伪造音频帧').toBe(0);
+    expect(r.texts.length).toBe(2);
+    expect(JSON.parse(r.texts[0]).pause).toBe(1);
+    expect(JSON.parse(r.texts[1]).resume).toBe(1);
   });
 
   test('恢复后继续发送', async ({ page }) => {
