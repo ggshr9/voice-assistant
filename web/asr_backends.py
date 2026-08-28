@@ -51,13 +51,26 @@ class Qwen3Backend:
                                                device_map=device,
                                                max_new_tokens=self.MAX_NEW)
 
+    # qwen_asr 库【没有】自动检测:language=None 时不报错但静默返回空串,
+    # 传 "auto" 则 validate 抛异常。实测用户选「语言·自动」→ 整场字幕全空,
+    # 且批处理侧被 except:text="" 吞成整场空转写 —— 一处根因两处静默炸。
+    # 所以 auto 一律落到默认语种;Qwen 的中文模式本就能带出英文混说
+    # (实测输出 "Hello。哈喽,哈喽"),纯英文会议请显式选英文。
+    DEFAULT_LANG = None   # 延迟读 env,让测试可控
+
+    def _lang_name(self, lang_ui):
+        name = self._LANG.get(lang_ui or "")
+        if name:
+            return name
+        return os.environ.get("CAPTION_ASR_DEFAULT_LANG", "Chinese")
+
     def transcribe(self, audio, lang_ui):
         secs = len(audio) / SR
         # transcribe() 签名里【没有】max_new_tokens 参数,它读实例属性
         # (qwen3_asr.py:379)。按参数传会静默走 TypeError 兜底,上限从不生效 —— 踩过。
         self.m.max_new_tokens = max(self.MIN_NEW,
                                     min(self.MAX_NEW, int(secs * self.TOKENS_PER_SEC)))
-        r = self.m.transcribe(audio=(audio, SR), language=self._LANG.get(lang_ui or ""))
+        r = self.m.transcribe(audio=(audio, SR), language=self._lang_name(lang_ui))
         if not r:
             return "", lang_ui or ""
         text = (getattr(r[0], "text", "") or "").strip()

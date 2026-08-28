@@ -604,6 +604,32 @@ class TestAskEndpointSource(unittest.TestCase):
         self.assertIn("413", self.body)
 
 
+class TestAutoLangMapping(unittest.TestCase):
+    """qwen_asr 没有自动检测:None 静默返回空、"auto" 抛异常被吞 ——
+    用户选「语言·自动」曾导致实时字幕与批处理【双双整场空转写】,且查无此错。
+    auto 必须落到默认语种,这条约定两条路径各锁一测。"""
+
+    def test_实时后端auto落到默认语种(self):
+        import numpy as np
+        b = load_asr_backends()
+        cls = b.BACKENDS["qwen3"]; inst = cls.__new__(cls)
+        seen = {}
+        class M:
+            max_new_tokens = 0
+            def transcribe(self, audio, language):
+                seen["lang"] = language; return []
+        inst.m = M()
+        for ui in (None, "", "auto"):
+            inst.transcribe(np.zeros(16000, dtype="float32"), ui)
+            self.assertEqual(seen["lang"], "Chinese",
+                             f"lang_ui={ui!r} 必须映射成 Chinese,传 None 会静默得到空串")
+
+    def test_批处理语言表没有auto陷阱(self):
+        src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
+        self.assertNotIn('"auto": "auto"', src,
+                         '"auto"→"auto" 会让 validate 抛异常并被 per-clip except 吞成空转写')
+
+
 class TestContainerKnobs(unittest.TestCase):
     """容器化(issue #2)依赖的三个开关 —— 都是源码级不变量,防被"顺手清理"掉。"""
 

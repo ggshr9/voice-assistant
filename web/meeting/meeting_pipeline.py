@@ -23,7 +23,10 @@ def _ld():
     return ":".join(p)
 
 
-_LANG = {"zh": "Chinese", "en": "English", "auto": "auto"}
+# 注意没有 "auto" 键:qwen_asr 不认 "auto"(validate 直接抛),而 asr_diarize_step
+# 的 per-clip except 会把异常吞成 text="" —— 用户选「自动」= 整场空转写,还查无此错。
+# auto 走 .get 的默认值落到 Chinese。
+_LANG = {"zh": "Chinese", "en": "English"}
 
 
 def to_wav_cmd(audio, wav, roles):
