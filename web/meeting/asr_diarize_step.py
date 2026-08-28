@@ -128,6 +128,34 @@ else:                                            # 单声道(线下/上传):纯 
                 anon += 1
         tasks.append((st, en, wav, order[sp]))
     print(f"diarized {len(order)} speakers", flush=True)
+# ---- 分人空手而归的降级 ----
+# 真实翻车:某段浏览器采集的音频(健康电平、webrtcvad 认、Qwen 能整句转写),
+# pyannote 分割模型对它输出【精确全零】—— 高通/归一/切片/换喂入方式全试过,原因未明
+# (对上传文件一直正常,悬案另行追查)。分人挂了以前会产出【整场空纪要】还查无此错。
+# 降级:用 webrtcvad 自己切段,全部记同一个「说话人A」—— 丢的是分人,保住转写。
+if not tasks:
+    # tasks 第三元是【float32 信号数组】(下游按 sig[int(st*sr)] 切片),不是路径 ——
+    # wav 变量在本文件里就是下混后的信号,直接复用;VAD 需要 int16 字节,现转。
+    import webrtcvad
+    _pcm = (wav * 32768.0).clip(-32768, 32767).astype("<i2").tobytes()
+    _vad = webrtcvad.Vad(2)
+    _fb = sr * 30 // 1000 * 2                       # 30ms 帧
+    _st, _speech, _sil = None, 0, 0
+    for _i in range(0, len(_pcm) - _fb, _fb):
+        _t = _i / 2 / sr
+        if _vad.is_speech(_pcm[_i:_i+_fb], sr):
+            _speech += 1; _sil = 0
+            if _st is None: _st = _t
+        else:
+            _sil += 1
+            if _st is not None and (_sil >= 27 or _t - _st > 25):   # 0.8s 静音或 25s 硬断
+                if _speech >= 14: tasks.append((_st, _t, wav, "说话人A"))
+                _st, _speech, _sil = None, 0, 0
+    if _st is not None and _speech >= 14:
+        tasks.append((_st, len(wav)/sr, wav, "说话人A"))
+    if tasks:
+        print(f"⚠️ 分人空手而归,已降级:webrtcvad 切出 {len(tasks)} 段,全部记为说话人A", flush=True)
+
 tasks.sort(key=lambda x: x[0])
 
 # ---- 逐轮 ASR ----
