@@ -409,3 +409,23 @@ Windows 用户：装 Docker Desktop 后双击 `windows/start.cmd` —— 首次�
 - `asr_backends`:whisper 的 compute_type 不再写死 float16（CPU 要 int8，写死当场报错）
 - `meeting_pipeline`:两个解释器路径可用 `MEETING_PY_STT/PY_DIA` 顶掉（容器里全栈同一解释器）
 - `web_caption`:显式 `CAPTION_TLS_SELFSIGN=1` 才自签，裸机缺证书仍大声报错
+
+---
+
+## 实时 ASR 选型复核（2026-08-27,用户真实录音 A/B）
+
+用户反馈实时字幕效果不佳(多人口语闲聊场景)。用其 123 秒真实录音做了两组实验:
+
+**① FireRedASR2-AED(榜单中文 CER 2.89 vs Qwen 3.76)** —— 在我们的
+「任意 VAD 段」输入下**完败**:六个 10 秒切片里两个空、两个含义错乱
+("花钱是贵"被转成"两千四百四十五个男司机"),个别切片耗时 4 秒。
+榜单成绩出自它自家全套管线(专用 VAD+LID+标点);脱离那套喂裸段直接崩。
+LLM 版(8B)无流式,不适合实时;留作将来批处理侧评估。
+环境保留在服务器 `~/voice-svc/FireRedASR2S/`(py3.11 venv + AED 4.5G)。
+
+**② Qwen 的 context 参数(滚动上文)** —— 模型把上文**原样复读进输出**
+(经典 prompt 回声),越滚越长。弃用。
+
+**结论:实时侧 Qwen3-ASR-1.7B 维持现役。** 体感差的真实构成:
+实时=无上下文短段草稿,本就是质量阶梯的下层;多人口语闲聊是 ASR 最难场景。
+真正的质量在「停止 → 生成纪要」后的批处理重转(整段+分人),评估应以那份为准。
