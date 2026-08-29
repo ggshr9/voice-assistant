@@ -6,7 +6,7 @@ FROM python:3.12-slim
 
 ARG TORCH_FLAVOR=cpu
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg openssl && rm -rf /var/lib/apt/lists/*
+      ffmpeg openssl pandoc && rm -rf /var/lib/apt/lists/*
 
 # torch 按口味装(cpu 轮子小得多);其余依赖两种口味相同
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${TORCH_FLAVOR}
@@ -24,7 +24,8 @@ COPY prompts.py llm_chain.py noise_filter.py recall_core.py ./
 COPY bin/_voiceprint.py ./_voiceprint.py
 COPY web/ ./web/
 
-ENV MEETING_PY_STT=python3 \
+ENV CAPTION_PANDOC=/usr/bin/pandoc \
+    MEETING_PY_STT=python3 \
     MEETING_PY_DIA=python3 \
     CAPTION_TLS_SELFSIGN=1 \
     CAPTION_TLS_DIR=/data/tls \

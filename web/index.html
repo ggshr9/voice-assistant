@@ -375,7 +375,7 @@
 
       <div id="minutesCard" class="doc-card" style="display:none">
         <div class="doc-head"><b>📋 会议纪要</b><span class="sp"></span>
-          <button class="btn ghost sm" id="copyM">复制</button><button class="btn green sm" id="dlm">下载</button></div>
+          <button class="btn ghost sm" id="copyM">复制</button><button class="btn ghost sm" id="docxM">Word</button><button class="btn ghost sm" id="pdfM">打印/PDF</button><button class="btn green sm" id="dlm">下载</button></div>
         <div class="doc-body md" id="md"></div>
       </div>
 
@@ -996,6 +996,19 @@ $('stop').onclick=stopAll;
 $('genBtn').onclick=()=>{ $('genBtn').disabled=true; startMinutes(curSid); };
 $('viewBtn').onclick=()=>{ if(curSid) openDetail(curSid); };
 
+/* ---- 打印/PDF:浏览器原生「另存为 PDF」,不在服务端拖 LaTeX ---- */
+function printDoc(title, md){
+  const w=window.open('','_blank'); if(!w){ alert('弹窗被拦截,允许后重试'); return; }
+  w.document.write('<title>'+title+'</title><style>'
+    +'body{font:15px/1.8 -apple-system,"PingFang SC",sans-serif;color:#111;max-width:720px;margin:32px auto;padding:0 24px}'
+    +'h1,h2,h3{line-height:1.3} table{border-collapse:collapse;width:100%} '
+    +'td,th{border:1px solid #999;padding:6px 10px;text-align:left} '
+    +'blockquote{border-left:3px solid #b45309;margin:8px 0;padding:4px 12px;color:#92400e} '
+    +'@media print{body{margin:0;max-width:none}}</style>'
+    +'<h1>'+title+'</h1>'+mdToHtml(md));
+  w.document.close(); w.focus(); setTimeout(()=>w.print(), 300);
+}
+
 /* ---- 字号 / PiP ---- */
 function fs(v){ const r=document.documentElement,c=parseInt(getComputedStyle(r).getPropertyValue('--fs'));
   r.style.setProperty('--fs',Math.max(18,Math.min(56,c+v))+'px'); }
@@ -1161,6 +1174,8 @@ async function openDetail(id, job){
   // 会议纪要
   if(d.minutes){ $('minutesCard').style.display='block'; $('md').innerHTML=mdToHtml(d.minutes);
     $('dlm').onclick=()=>dl('会议纪要.md',d.minutes);
+    $('docxM').onclick=()=>{ location.href='/session/'+encodeURIComponent(id)+'/export?doc=minutes&pw='+encodeURIComponent(pw); };
+    $('pdfM').onclick=()=>printDoc(m.title||id, d.minutes);
     $('copyM').onclick=()=>{ try{navigator.clipboard.writeText(d.minutes); $('copyM').textContent='已复制'; setTimeout(()=>$('copyM').textContent='复制',1200);}catch(e){} }; }
   // 对照:左实时字幕 右会议记录
   const hasLive=(d.live||[]).length, hasRec=!!d.record;

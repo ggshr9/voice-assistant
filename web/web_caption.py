@@ -3,7 +3,7 @@
 落盘:每场会议是一个 session,录音(recording.pcm/.wav)与实时转写(live.jsonl)边走边存。
 生成:停止后拿 recording.wav 跑 meeting_pipeline.py 出 会议纪要/会议记录。
 模块:config(配置) / stt(转写翻译) / sessions(会议存储) / jobs(纪要任务) / 本文件(路由)。"""
-import asyncio, json, os, shutil, ssl, time, uuid, glob
+import asyncio, json, os, shutil, ssl, time, urllib.parse, uuid, glob
 import numpy as np
 import webrtcvad
 from aiohttp import web
@@ -546,6 +546,47 @@ async def session_claim(request):
     return web.json_response({"ok": True, "name": name, "renamed": renamed})
 
 
+# 导出:DOCX 走 pandoc 静态二进制(md→docx 含表格,质量好且免 root);
+# PDF 刻意【不】在服务端做 —— 那要拖一整套 LaTeX,而浏览器打印另存 PDF
+# 是零依赖、离线可用、样式还跟页面一致的原生路径(前端「打印/PDF」按钮)。
+PANDOC = os.path.expanduser(os.environ.get("CAPTION_PANDOC", "~/voice-svc/bin/pandoc"))
+_EXPORT_DOCS = {"minutes": "会议纪要.md", "record": "会议记录.md",
+                "enhanced": "增强笔记.md", "notes": "notes.md"}
+
+
+async def session_export(request):
+    if not check_pw(request.query.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
+    d = sess_dir(request.match_info["id"])
+    if not d:
+        return web.json_response({"error": "无此会议"}, status=404)
+    doc = request.query.get("doc", "minutes")
+    fn = _EXPORT_DOCS.get(doc)
+    if not fn:
+        return web.json_response(
+            {"error": f"doc 只认 {'/'.join(_EXPORT_DOCS)}"}, status=400)
+    src = os.path.join(d, fn)
+    if not os.path.exists(src):
+        return web.json_response({"error": f"这场会还没有{fn}"}, status=404)
+    if not os.path.exists(PANDOC):
+        return web.json_response(
+            {"error": "服务器没装 pandoc(见 docs/DEPLOY.md 导出一节)"}, status=501)
+    out = os.path.join(d, f".export-{doc}.docx")
+    proc = await asyncio.create_subprocess_exec(
+        PANDOC, "-f", "gfm", "-t", "docx", "-o", out, src,
+        stderr=asyncio.subprocess.PIPE)
+    _, err = await proc.communicate()
+    if proc.returncode != 0 or not os.path.exists(out):
+        return web.json_response(
+            {"error": "转换失败：" + err.decode("utf-8", "ignore")[-200:]}, status=502)
+    meta = read_meta(d) or {}
+    title = (meta.get("title") or request.match_info["id"]).replace('"', "")
+    resp = web.FileResponse(out, headers={
+        "Content-Disposition":
+            f"attachment; filename*=UTF-8''{urllib.parse.quote(title + '-' + doc)}.docx"})
+    return resp
+
+
 async def ask_library(request):
     """跨会议检索问答:两段式(选会 → 作答带出处),语义与 Mac 端 recall 同源。
 
@@ -642,6 +683,7 @@ def main():
     app.router.add_post("/session/{id}/notes", session_notes)
     app.router.add_post("/session/{id}/claim", session_claim)
     app.router.add_get("/speakers", speakers_list)
+    app.router.add_get("/session/{id}/export", session_export)
     app.router.add_post("/session/{id}/delete", session_delete)
     app.router.add_get("/session/{id}/audio", session_audio)
     app.router.add_get("/session/{id}", session_get)

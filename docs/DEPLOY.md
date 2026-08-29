@@ -464,3 +464,11 @@ echoCancellation+noiseSuppression+AGC 处理,0-1k 能量占比 67.7%(对照 51.9
   2h 长会的耗时(需分窗)。两条 prompt 级坑:processor 必须传
   language_model_pretrained_name="Qwen/Qwen2.5-7B",否则特征全错静默输出
   [Unintelligible];在退化输入(音乐幻觉循环)上量的性能数字不能当模型性能。
+
+## 导出(2026-08-29)
+
+- **Word(.docx)**:详情页每张文档卡的「Word」按钮,服务端 pandoc 转换
+  (静态二进制 `~/voice-svc/bin/pandoc`,免 root;容器里走 apt 的 pandoc,
+  `CAPTION_PANDOC` 可指路径)。
+- **PDF**:「打印/PDF」按钮开打印视图,用浏览器原生「另存为 PDF」——
+  刻意不在服务端做:那要拖一整套 LaTeX,而浏览器路径零依赖、离线可用。

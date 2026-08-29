@@ -693,6 +693,26 @@ class TestMaterialWarning(unittest.TestCase):
         self.assertIn("warn", blk, "警告没有拼进纪要正文")
 
 
+class TestExportEndpointSource(unittest.TestCase):
+    """导出接口不变量:doc 参数走白名单(拼路径的地方绝不放行任意文件名)。"""
+
+    def setUp(self):
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = src.index("async def session_export")
+        self.body = src[i:src.index("\nasync def", i + 10)]
+
+    def test_doc走白名单不拼任意文件名(self):
+        self.assertIn("_EXPORT_DOCS.get", self.body)
+        self.assertNotIn('request.query.get("doc")]', self.body.replace(" ", ""))
+
+    def test_口令先于查会话(self):
+        self.assertLess(self.body.index("check_pw"), self.body.index("sess_dir"))
+
+    def test_pandoc缺失给可操作提示(self):
+        self.assertIn("501", self.body)
+        self.assertIn("DEPLOY", self.body)
+
+
 class TestClaimEndpointSource(unittest.TestCase):
     """声纹认领(网页化)的四条源码级不变量。"""
 
