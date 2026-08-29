@@ -437,3 +437,14 @@ pyannote segmentation-3.0/community-1 对其输出**精确 0.000** —— 切片
 已在 asr_diarize_step 加降级:分人空手而归时用 webrtcvad 切段、全部记「说话人A」,
 保住转写(此前是整场空纪要且查无此错)。悬案线索:该音频经 Chrome
 echoCancellation+noiseSuppression+AGC 处理,0-1k 能量占比 67.7%(对照 51.9%)。
+
+**③ VibeVoice-ASR-7B 评测(2026-08-28/29,微软,转写+分人+时间戳一体)**
+- 真人语音(英文 2 人对话 60s):**质量优秀** —— 说话人全对、轮次边界干净、
+  逐字级忠实(连 "uh, you know" 都保留),结构化 JSON 一趟出「谁-何时-说什么」。
+- 音乐段:输出 `[Lyric]` 标签 —— 三家模型里唯一明说「这是歌」的(Qwen 硬转、
+  FireRed 编歌词、pyannote 沉默),可当音乐检测器,但素材质检用 pyannote
+  语音帧占比更便宜(实测:真人语音 47.9% vs 音乐 0.0%)。
+- **不采用的原因是工程而非质量**:7B 要 18GB+,与实时字幕的 Qwen(4.8GB)
+  同卡放不下(185s 整段 OOM);共享显存下 60s 音频跑 682s(RTF≈11)。
+  重启评估的触发条件:有专卡,或 VibeASR.cpp 量化版成熟。
+  环境保留:~/voice-svc/VibeVoice(py3.12 venv + 模型 ~15G)。
