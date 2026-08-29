@@ -451,3 +451,16 @@ echoCancellation+noiseSuppression+AGC 处理,0-1k 能量占比 67.7%(对照 51.9
   批处理期间临时卸载实时模型。—— 因此它是【批处理后端的真候选】
   (一个模型替掉 pyannote+Qwen 接力,还自带音乐标注),不是"留档不采用"。
   环境保留:~/voice-svc/VibeVoice(py3.12 venv + 模型 ~15G)。
+
+**④ VibeVoice-ASR 8bit 量化 spike(2026-08-29,结论:现有硬件可行)**
+- 整模型 8bit → 全部 `[Unintelligible]`:**量化毁的是音频塔**(bf16 对照完好锁定归因)。
+- 解法:`llm_int8_skip_modules=[acoustic/semantic_tokenizer, connectors, diffusion_head,
+  lm_head]` —— 只量化 LLM 解码器。输出与 bf16 逐字级一致(仅 "C-bus/C-balls" 级微差)。
+- 整段 265s 真实会议:**峰值 13.65GB、135.5s(RTF≈0.51)、与实时 Qwen 同卡共存无碍**
+  (bf16 在 185s 就 OOM 的场景)。判 3 个说话人(pyannote 判 2,素材实为 8 人会切片,
+  孰对未裁)。
+- **判词:批处理后端的可行候选,不再受硬件阻塞。** 换它前必须解决:声纹注册与
+  pyannote 向量的兼容(方案候选:VV 出轮次 + pyannote 只做声纹比对)、RTF 0.5 对
+  2h 长会的耗时(需分窗)。两条 prompt 级坑:processor 必须传
+  language_model_pretrained_name="Qwen/Qwen2.5-7B",否则特征全错静默输出
+  [Unintelligible];在退化输入(音乐幻觉循环)上量的性能数字不能当模型性能。
