@@ -43,6 +43,30 @@ def to_wav_cmd(audio, wav, roles):
     return cmd + [wav]
 
 
+# 素材质检阈值:语音占比低于此值,产物头部打显式警告。
+# 取 0.25:正常会议实测 0.5+,背景音乐 0.0;夹在中间的是"少量说话+大量放东西"。
+SPEECH_RATIO_WARN = float(os.environ.get("MEETING_SPEECH_RATIO_WARN", "0.25"))
+
+
+def material_warning(stats):
+    """边车统计 → 该打进产物头部的警告文本;素材正常返回 None。
+
+    警告必须写进【产物本身】而不是日志:用户只看纪要,曾拿着一场被硬转的
+    背景音乐评估了半天系统 —— 整条链路当时零提示。
+    """
+    if not stats:
+        return None
+    ratio = stats.get("speech_ratio", 1)
+    fallback = stats.get("diarization_fallback")
+    if ratio < SPEECH_RATIO_WARN:
+        return (f"> ⚠️ **素材可疑**:本段音频仅 {ratio:.0%} 被判定为人声"
+                f"(正常会议约 50%)。大概率是背景音乐/播放内容,以下转写不可尽信。\n")
+    if fallback:
+        return ("> ⚠️ 说话人分离未成功,已降级为单说话人 —— "
+                "「说话人A」不代表真的只有一个人。\n")
+    return None
+
+
 def run(audio, outdir, me=None, lang="zh", log=print):
     os.makedirs(outdir, exist_ok=True)
     # 线上会议(双声道 L=对方/R=我)走声道分人;其余下混走 pyannote
@@ -65,15 +89,30 @@ def run(audio, outdir, me=None, lang="zh", log=print):
     subprocess.run([PY_DIA, os.path.join(HERE, "asr_diarize_step.py"), wav, ann, _LANG.get(lang, "Chinese"), roles],
                    check=True, env=os.environ)
     text = open(ann, encoding="utf-8").read().strip()
+    stats = {}
+    try:
+        stats = json.load(open(os.path.join(outdir, "diar_stats.json"), encoding="utf-8"))
+        m0 = json.load(open(os.path.join(outdir, "meta.json"), encoding="utf-8"))
+        m0["speech_ratio"] = stats.get("speech_ratio")
+        m0["diarization_fallback"] = stats.get("diarization_fallback")
+        json.dump(m0, open(os.path.join(outdir, "meta.json"), "w", encoding="utf-8"),
+                  ensure_ascii=False)
+    except Exception:                          # noqa: BLE001  质检缺失不拦主流程
+        pass
+    warn = material_warning(stats)
     nspk = len(set(re.findall(r"^(?:说话人[A-Z]|我|对方)", text, re.M)))
     log(f"转写完成：{nspk} 人")
 
     log("生成会议纪要（网关 Qwen3.6）")
     minutes = minutes_lib.make_minutes(text, me, log)
+    if warn:
+        minutes = warn + "\n" + minutes
     open(os.path.join(outdir, "会议纪要.md"), "w", encoding="utf-8").write(minutes)
 
     log("生成会议记录（忠实还原）")
     record = minutes_lib.make_record(text, log)
+    if warn:
+        record = warn + "\n" + record
     open(os.path.join(outdir, "会议记录.md"), "w", encoding="utf-8").write(record)
 
     # 用户开会时记了手记 → 多产出一份「增强笔记」(用户笔记为骨架,转写补全)

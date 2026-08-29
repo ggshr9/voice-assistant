@@ -3,6 +3,7 @@
 用法: python asr_diarize_step.py <wav> <out.txt> [语言] [声道角色]
 语言: Chinese / English / auto(默认 Chinese)
 声道角色: 1=双声道分轨(L=对方/R=我,线上会议)按声道贴"我/对方";其余=纯 pyannote 说话人A/B"""
+import json
 import sys, os, string, torch, numpy as np
 from scipy.io import wavfile
 from pyannote.audio import Pipeline
@@ -133,6 +134,11 @@ else:                                            # 单声道(线下/上传):纯 
 # pyannote 分割模型对它输出【精确全零】—— 高通/归一/切片/换喂入方式全试过,原因未明
 # (对上传文件一直正常,悬案另行追查)。分人挂了以前会产出【整场空纪要】还查无此错。
 # 降级:用 webrtcvad 自己切段,全部记同一个「说话人A」—— 丢的是分人,保住转写。
+# 语音占比必须在【降级之前】取 pyannote 的轮次 —— 降级后的 tasks 是 webrtcvad
+# 切的,而 webrtcvad 把音乐也当"语音"(实测 cursed 场被它记成 95.6%),
+# 素材质检的判别力全在 pyannote 那个 0.0 上,取错地方整个质检就是摆设。
+PYANNOTE_SPEECH_SEC = sum(en - st for st, en, _sig, _lab in tasks)
+FALLBACK_USED = False
 if not tasks:
     # tasks 第三元是【float32 信号数组】(下游按 sig[int(st*sr)] 切片),不是路径 ——
     # wav 变量在本文件里就是下混后的信号,直接复用;VAD 需要 int16 字节,现转。
@@ -154,6 +160,7 @@ if not tasks:
     if _st is not None and _speech >= 14:
         tasks.append((_st, len(wav)/sr, wav, "说话人A"))
     if tasks:
+        FALLBACK_USED = True
         print(f"⚠️ 分人空手而归,已降级:webrtcvad 切出 {len(tasks)} 段,全部记为说话人A", flush=True)
 
 tasks.sort(key=lambda x: x[0])
@@ -177,4 +184,17 @@ for st, en, sig, lab in tasks:
     lines.append(f"{lab}：{text}")
 
 open(out_txt, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+
+# ---- 素材质检边车 ----
+# pyannote 的语音帧占比是现成的「这段到底是不是人在说话」判别器:
+# 实测真人语音 47.9% 帧为语音,背景音乐 0.0%(它对音乐正确地保持沉默,
+# 而 Qwen 会把音乐硬转成流利中文 —— 用户拿着一场"音乐会议"评估了半天系统)。
+# ratio 低不代表转写是错的,但代表【这场的素材本身可疑】,必须让产物自己说出来。
+_total = len(wav) / sr if hasattr(wav, "__len__") else 0
+_stats = {"speech_seconds": round(PYANNOTE_SPEECH_SEC, 1), "total_seconds": round(_total, 1),
+          "speech_ratio": round(PYANNOTE_SPEECH_SEC / _total, 3) if _total else 0.0,
+          "diarization_fallback": FALLBACK_USED}
+json.dump(_stats, open(os.path.join(os.path.dirname(out_txt) or ".", "diar_stats.json"),
+                       "w", encoding="utf-8"))
+print(f"SPEECH_RATIO {_stats['speech_ratio']}", flush=True)
 print(f"ASR done: {len(spks)} speakers, {len(lines)} lines", flush=True)

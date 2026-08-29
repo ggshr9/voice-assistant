@@ -630,6 +630,43 @@ class TestAutoLangMapping(unittest.TestCase):
                          '"auto"→"auto" 会让 validate 抛异常并被 per-clip except 吞成空转写')
 
 
+class TestMaterialWarning(unittest.TestCase):
+    """素材质检:警告必须写进【产物本身】。
+
+    事故:用户拿一场被硬转的背景音乐评估了半天系统,整条链路零提示 ——
+    pyannote 明明知道(语音帧 0.0%),但没人把它的话传出去。"""
+
+    def setUp(self):
+        self.p = load_pipeline()
+
+    def test_音乐素材触发警告且写明占比(self):
+        w = self.p.material_warning({"speech_ratio": 0.0, "diarization_fallback": True})
+        self.assertIsNotNone(w)
+        self.assertIn("0%", w)
+        self.assertIn("不可尽信", w)
+
+    def test_正常会议不打扰(self):
+        """误报会让警告失去公信力 —— 正常占比(实测 0.5+)绝不能弹。"""
+        self.assertIsNone(self.p.material_warning({"speech_ratio": 0.52,
+                                                   "diarization_fallback": False}))
+
+    def test_占比正常但降级过_提示分人而非素材(self):
+        w = self.p.material_warning({"speech_ratio": 0.5, "diarization_fallback": True})
+        self.assertIn("说话人", w)
+        self.assertNotIn("不可尽信", w, "素材没问题就别吓唬人")
+
+    def test_没有边车时静默(self):
+        """老会话没有 diar_stats.json —— 质检缺失不该拦主流程也不该报错。"""
+        self.assertIsNone(self.p.material_warning({}))
+        self.assertIsNone(self.p.material_warning(None))
+
+    def test_警告进纪要头部_源码级(self):
+        src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
+        i = src.index("make_minutes(text, me, log)")
+        blk = src[i:src.index("会议纪要.md", i)]
+        self.assertIn("warn", blk, "警告没有拼进纪要正文")
+
+
 class TestContainerKnobs(unittest.TestCase):
     """容器化(issue #2)依赖的三个开关 —— 都是源码级不变量,防被"顺手清理"掉。"""
 

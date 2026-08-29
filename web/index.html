@@ -225,6 +225,8 @@
   .mic-hint{font-size:12px;opacity:.75}
   .mic-hint.ok{color:var(--ok);opacity:1}
   .mic-hint.bad{color:var(--rec);opacity:1;font-weight:600}
+  .mat-banner{margin:10px 0;padding:10px 14px;border:1px solid var(--warn);
+    border-radius:10px;color:var(--warn);font-size:13.5px;background:rgba(251,191,36,.08)}
   .mic-name{margin-left:10px;font-size:12px;opacity:.62}
   .mic-name.bad{color:var(--rec);opacity:1;font-weight:600}
   #gate{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
@@ -1053,6 +1055,17 @@ async function openDetail(id, job){
   if(d.error){ alert(d.error); return; }
   const m=d.meta||{};
   $('dTitle').textContent=m.title||id;
+  // 素材质检横幅:语音占比异常要当着用户的面说,别只藏在纪要头部
+  const oldBan=document.getElementById('matBanner'); if(oldBan) oldBan.remove();
+  if(m.speech_ratio!=null && m.speech_ratio < 0.25){
+    const b=document.createElement('div'); b.id='matBanner'; b.className='mat-banner';
+    b.textContent='⚠️ 本场仅 '+Math.round(m.speech_ratio*100)+'% 被判定为人声（正常会议约 50%）——大概率是背景音乐/播放内容，转写不可尽信。';
+    $('dTitle').after(b);
+  } else if(m.diarization_fallback){
+    const b=document.createElement('div'); b.id='matBanner'; b.className='mat-banner';
+    b.textContent='⚠️ 说话人分离未成功，已降级为单说话人——「说话人A」不代表真的只有一个人。';
+    $('dTitle').after(b);
+  }
   $('dMeta').textContent=(m.scene||'')+' · '+fmtTime(m.started)+' · 时长 '+fmtDur(m.duration)+' · '+(ST[m.status]||m.status||'');
   // 操作
   // 异常未结束的录制场:可恢复(封存录音)
