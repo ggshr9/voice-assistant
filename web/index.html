@@ -971,7 +971,21 @@ async function stopAll(){
   await waitWsClosed(8000);                      // 等尾句转完(最多 8s)
   setStatus('','已停止');
   if(curSid){ try{ await fetch('/session/'+encodeURIComponent(curSid)+'/finish?pw='+encodeURIComponent(pw),{method:'POST'}); }catch(e){}
-    $('afterStop').style.display='flex'; }   // 录了就给入口(即便没转写出文字,也能查看/生成)
+    $('afterStop').style.display='flex';
+    // 停止即自动出最终质量:实时只是草稿,真正的质量(分人+去噪)在批处理里,
+    // 而它原来要用户多点一下才出现 —— 用户拿草稿评估了半天系统。
+    // GPU 是自己的,没理由让最终质量等人点。太短的场(<15s)不值得烧一遍。
+    if(recordedSec() >= 15){
+      setStatus('ok','已停止 · 正在自动生成纪要与完整转写…');
+      $('genBtn').disabled=true;
+      startMinutes(curSid);
+    }
+  }
+}
+
+function recordedSec(){
+  const gone = pausedTotal + (pausedAt ? Date.now()-pausedAt : 0);
+  return Math.max(0, (Date.now() - t0 - gone) / 1000);
 }
 $('stop').onclick=stopAll;
 

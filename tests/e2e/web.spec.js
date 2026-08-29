@@ -709,3 +709,47 @@ test.describe('暂停/继续（issue #1）', () => {
     await expect(page.locator('#pauseBtn')).toBeDisabled();
   });
 });
+
+test.describe('停止即自动出最终质量', () => {
+  test('录满 15 秒停止后自动触发生成', async ({ page }) => {
+    await enter(page);
+    const fired = await page.evaluate(async () => {
+      // 只驱动 stopAll 的决策逻辑:采集/WS 全用桩
+      let started = null;
+      window.startMinutes = id => { started = id; };
+      window.stopAudio = () => {}; window.waitWsClosed = async () => {};
+      window.flushNotes = async () => {};
+      capturing = true; manualStop = false; curSid = 'sid-测试';
+      t0 = Date.now() - 20000; pausedTotal = 0; pausedAt = 0;   // 录了 20 秒
+      ws = { readyState: 3, send: () => {}, close: () => {} };
+      await stopAll();
+      return started;
+    });
+    expect(fired, '停止后没有自动生成').toBe('sid-测试');
+  });
+
+  test('太短的场不烧 GPU', async ({ page }) => {
+    await enter(page);
+    const fired = await page.evaluate(async () => {
+      let started = null;
+      window.startMinutes = id => { started = id; };
+      window.stopAudio = () => {}; window.waitWsClosed = async () => {};
+      window.flushNotes = async () => {};
+      capturing = true; manualStop = false; curSid = 'sid-短';
+      t0 = Date.now() - 5000; pausedTotal = 0; pausedAt = 0;    // 只录了 5 秒
+      ws = { readyState: 3, send: () => {}, close: () => {} };
+      await stopAll();
+      return started;
+    });
+    expect(fired, '5 秒的误触也去生成纪要 = 浪费').toBeNull();
+  });
+
+  test('暂停时间不计入录制时长', async ({ page }) => {
+    await enter(page);
+    const sec = await page.evaluate(() => {
+      t0 = Date.now() - 60000; pausedTotal = 50000; pausedAt = 0;  // 60s 里暂停了 50s
+      return recordedSec();
+    });
+    expect(sec, '暂停的 50 秒不该算录制').toBeLessThan(15);
+  });
+});
