@@ -753,3 +753,29 @@ test.describe('停止即自动出最终质量', () => {
     expect(sec, '暂停的 50 秒不该算录制').toBeLessThan(15);
   });
 });
+
+test.describe('素材质检横幅', () => {
+  test('音乐场详情页出警告横幅(真实会话)', async ({ page }) => {
+    await enter(page);
+    await page.evaluate(() => openDetail('20260827_1921_会议_c20e'));
+    const b = page.locator('#matBanner');
+    await expect(b).toBeVisible({ timeout: 20000 });
+    await expect(b).toContainText('人声');
+    await expect(b, '要给出可操作的解释,不是干巴巴一个百分比').toContainText('背景音乐');
+  });
+
+  test('正常会话不弹横幅', async ({ page }) => {
+    await enter(page);
+    // 找一场没有 speech_ratio 或占比正常的旧会
+    const sid = await page.evaluate(async (pw) => {
+      const r = await fetch('/sessions?pw=' + encodeURIComponent(pw)).then(r => r.json());
+      const list = r.sessions || r || [];
+      const ok = list.find(s => s.id !== '20260827_1921_会议_c20e');
+      return ok && ok.id;
+    }, PW);
+    test.skip(!sid, '没有其他会话可对照');
+    await page.evaluate(id => openDetail(id), sid);
+    await page.waitForTimeout(2500);
+    await expect(page.locator('#matBanner')).toHaveCount(0);
+  });
+});
