@@ -452,6 +452,91 @@ async def session_notes(request):
     return web.json_response({"ok": True, "chars": len(text)})
 
 
+# 注册表路径必须与批处理识别(asr_diarize_step:114)一字不差 —— 首个 E2E 就翻在这:
+# claim 写了 _voiceprint 的默认路径 ~/.config/,而识别读 ~/voice-svc/,
+# 注册进了一个没人读的本子。差点更糟:测试清理时先看到「注册表只剩测试员」,
+# 以为把顾时瑞删了 —— 实际他在另一个文件里毫发无损。
+VP_REGISTRY = os.path.expanduser(os.environ.get("CAPTION_VOICEPRINTS",
+                                                "~/voice-svc/voiceprints.json"))
+
+
+def _vp_mod():
+    """服务器根的 _voiceprint(sync-web 推送的那份,自带锁与原子写)。"""
+    import sys as _sys
+    root = os.path.dirname(HERE)
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    import _voiceprint as vp
+    return vp
+
+
+async def speakers_list(request):
+    if not check_pw(request.query.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
+    vp = _vp_mod()
+    people = vp.load_registry(VP_REGISTRY)
+    return web.json_response({"people": [
+        {"name": p.get("name"), "is_me": bool(p.get("is_me")),
+         "prints": len(p.get("embeddings") or []), "updated": p.get("updated")}
+        for p in people]})
+
+
+async def session_claim(request):
+    """把某场会的「说话人X」认领为真人 —— 即完成声纹注册(issue 路线图:声纹网页化)。
+
+    不用念稿:批处理已为每个说话人存了 256 维向量(embeddings.npz,键=展示标签)。
+    认领做三件事:向量入注册表(锁内,原子写)、把这场会的记录里标签改成真名、
+    此后每场会自动认出。口令先于查会话(既有教训)。
+    """
+    body = await request.json() if request.can_read_body else {}
+    if not check_pw(body.get("pw", "")):
+        return web.json_response({"error": "口令错误"}, status=403)
+    d = sess_dir(request.match_info["id"])
+    if not d:
+        return web.json_response({"error": "无此会议"}, status=404)
+    speaker = (body.get("speaker") or "").strip()
+    name = (body.get("name") or "").strip()
+    is_me = bool(body.get("me"))
+    if not speaker or not name:
+        return web.json_response({"error": "speaker 和 name 都要给"}, status=400)
+    if len(name) > 32 or any(c in name for c in "/\\:：\n"):
+        return web.json_response({"error": "名字里别带路径分隔符"}, status=400)
+    npz_p = os.path.join(d, "embeddings.npz")
+    if not os.path.exists(npz_p):
+        return web.json_response(
+            {"error": "这场会没有声纹向量 —— 先点「生成会议纪要」跑一遍分人"}, status=409)
+    import numpy as np
+    data = np.load(npz_p)
+    if speaker not in data.files:
+        return web.json_response(
+            {"error": f"没有「{speaker}」的向量（有：{'、'.join(data.files)}）"}, status=404)
+    vp = _vp_mod()
+    source = f"{os.path.basename(d)}/{speaker}"
+    with vp.registry_lock(VP_REGISTRY):
+        people = vp.add_embedding(vp.load_registry(VP_REGISTRY), name, data[speaker],
+                                  source=source, is_me=is_me)
+        vp.save_registry(people, VP_REGISTRY)
+    # 这场会的产物里把匿名牌改成真名(整词替换:标签后必跟全角冒号)
+    renamed = []
+    # 标签有两种排版:annotated 是「说话人B：」,会议记录经 LLM 排版成「说话人 B：」——
+    # 首个 E2E 里第二种没被改到(条件只查了第一种,整块被跳过)。两种都列出来替。
+    variants = [speaker + "：", speaker[:-1] + " " + speaker[-1] + "："]
+    for fn in ("会议记录.md", "annotated.txt", "会议纪要.md"):
+        fp = os.path.join(d, fn)
+        if not os.path.exists(fp):
+            continue
+        txt = open(fp, encoding="utf-8").read()
+        new = txt
+        for v in variants:
+            new = new.replace(v, name + "：")
+        if new != txt:
+            tmp = fp + ".part"
+            open(tmp, "w", encoding="utf-8").write(new)
+            os.replace(tmp, fp)
+            renamed.append(fn)
+    return web.json_response({"ok": True, "name": name, "renamed": renamed})
+
+
 async def ask_library(request):
     """跨会议检索问答:两段式(选会 → 作答带出处),语义与 Mac 端 recall 同源。
 
@@ -546,6 +631,8 @@ def main():
     app.router.add_post("/session/{id}/rename", session_rename)
     app.router.add_post("/session/{id}/minutes", session_minutes)
     app.router.add_post("/session/{id}/notes", session_notes)
+    app.router.add_post("/session/{id}/claim", session_claim)
+    app.router.add_get("/speakers", speakers_list)
     app.router.add_post("/session/{id}/delete", session_delete)
     app.router.add_get("/session/{id}/audio", session_audio)
     app.router.add_get("/session/{id}", session_get)

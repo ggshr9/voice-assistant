@@ -667,6 +667,40 @@ class TestMaterialWarning(unittest.TestCase):
         self.assertIn("warn", blk, "警告没有拼进纪要正文")
 
 
+class TestClaimEndpointSource(unittest.TestCase):
+    """声纹认领(网页化)的四条源码级不变量。"""
+
+    def setUp(self):
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        i = src.index("async def session_claim")
+        self.body = src[i:src.index("\nasync def", i + 10)]
+        self.full = src
+
+    def test_注册表路径与批处理识别一致(self):
+        """首个 E2E 就翻在这:claim 写了默认 ~/.config/,识别读 ~/voice-svc/,
+        注册进了一个没人读的本子。路径必须同源。"""
+        self.assertIn("voice-svc/voiceprints.json", self.full)
+        step = (WEB / "meeting" / "asr_diarize_step.py").read_text(encoding="utf-8")
+        self.assertIn("voice-svc/voiceprints.json", step)
+
+    def test_两种标签排版都要替(self):
+        """annotated 是「说话人B：」,会议记录被 LLM 排版成「说话人 B：」——
+        第一版只查一种,第二种整块被跳过。"""
+        self.assertIn("variants", self.body)
+
+    def test_口令先于查会话(self):
+        self.assertLess(self.body.index("check_pw"), self.body.index("sess_dir"))
+
+    def test_写注册表在锁内(self):
+        i = self.body.index("registry_lock")
+        blk = self.body[i:i + 300]
+        self.assertIn("add_embedding", blk)
+        self.assertIn("save_registry", blk)
+
+    def test_没有向量时给出可操作的指引(self):
+        self.assertIn("生成会议纪要", self.body, "409 要告诉用户先跑一遍分人,不是干报错")
+
+
 class TestContainerKnobs(unittest.TestCase):
     """容器化(issue #2)依赖的三个开关 —— 都是源码级不变量,防被"顺手清理"掉。"""
 

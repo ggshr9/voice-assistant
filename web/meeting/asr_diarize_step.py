@@ -129,6 +129,13 @@ else:                                            # 单声道(线下/上传):纯 
                 anon += 1
         tasks.append((st, en, wav, order[sp]))
     print(f"diarized {len(order)} speakers", flush=True)
+    # 声纹向量落盘:网页版「事后认领说话人」要用。键用【展示标签】(说话人A/真名),
+    # 与用户在会议记录里看到的一致 —— 存原始 SPEAKER_00 的话,前端还得再猜一层映射。
+    if EMBEDDINGS:
+        _by_disp = {order[sp]: EMBEDDINGS[sp] for sp in order if sp in EMBEDDINGS}
+        if _by_disp:
+            np.savez(os.path.join(os.path.dirname(out_txt) or ".", "embeddings.npz"),
+                     **{k: np.asarray(v) for k, v in _by_disp.items()})
 # ---- 分人空手而归的降级 ----
 # 真实翻车:某段浏览器采集的音频(健康电平、webrtcvad 认、Qwen 能整句转写),
 # pyannote 分割模型对它输出【精确全零】—— 高通/归一/切片/换喂入方式全试过,原因未明

@@ -225,6 +225,8 @@
   .mic-hint{font-size:12px;opacity:.75}
   .mic-hint.ok{color:var(--ok);opacity:1}
   .mic-hint.bad{color:var(--rec);opacity:1;font-weight:600}
+  .claim-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+    margin:10px 0;font-size:13px;color:var(--muted)}
   .mat-banner{margin:10px 0;padding:10px 14px;border:1px solid var(--warn);
     border-radius:10px;color:var(--warn);font-size:13.5px;background:rgba(251,191,36,.08)}
   .mic-name{margin-left:10px;font-size:12px;opacity:.62}
@@ -1129,6 +1131,31 @@ async function openDetail(id, job){
     $('dNotesTa').placeholder='会后也可以补写要点，保存后点「↻ 重新生成」即可得到增强笔记。';
     $('saveNotes').onclick=async()=>{ $('saveNotes').disabled=true;
       await saveNotes(id,$('dNotesTa'),$('dNotesSt')); $('saveNotes').disabled=false; };
+  }
+  // 声纹认领:记录里的匿名说话人给一排「这是谁?」按钮。认领 = 完成声纹注册,
+  // 之后每场会自动认出;不用念稿(向量在批处理时已存好)。
+  const oldClaim=document.getElementById('claimRow'); if(oldClaim) oldClaim.remove();
+  if(d.record){
+    const anon=[...new Set((d.record.match(/说话人 ?[A-Z](?=：)/g)||[]).map(x=>x.replace(' ','')))];
+    if(anon.length){
+      const row=document.createElement('div'); row.id='claimRow'; row.className='claim-row';
+      row.append('🗣 认领说话人（认领即注册声纹，下次自动认出）：');
+      for(const sp of anon){
+        const b=document.createElement('button'); b.className='btn ghost sm'; b.textContent=sp+' 是谁?';
+        b.onclick=async()=>{
+          const nm=prompt(sp+' 的名字（若是你本人，名字后加「*」）：'); if(!nm) return;
+          const me=nm.endsWith('*'); const name=nm.replace(/\*+$/,'').trim(); if(!name) return;
+          b.disabled=true;
+          const r=await(await fetch('/session/'+encodeURIComponent(curSid)+'/claim',{method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({pw,speaker:sp,name,me})})).json();
+          if(r.error){ alert(r.error); b.disabled=false; return; }
+          openDetail(curSid);                        // 记录里的名字已改,重载展示
+        };
+        row.appendChild(b);
+      }
+      $('dActions').after(row);
+    }
   }
   // 会议纪要
   if(d.minutes){ $('minutesCard').style.display='block'; $('md').innerHTML=mdToHtml(d.minutes);
