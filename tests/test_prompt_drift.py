@@ -69,5 +69,27 @@ class TestSingleSource(unittest.TestCase):
                         f"上溯到 {landing}，那里没有 prompts.py")
 
 
+class TestTemplates(unittest.TestCase):
+    """纪要模板:不认识的 key 必须落回默认(老 meta 里存了被删的模板名时纪要还得能出)。"""
+
+    def test_每个模板都有名字且sys可解析(self):
+        for k, t in prompts.TEMPLATES.items():
+            self.assertTrue(t.get("name"), f"{k} 缺显示名")
+            self.assertTrue(prompts.template_sys(k).strip(), f"{k} 的 sys 为空")
+
+    def test_未知模板落回默认(self):
+        self.assertEqual(prompts.template_sys("已被删除的模板"), prompts.FINAL_SYS)
+        self.assertEqual(prompts.template_sys(None), prompts.FINAL_SYS)
+        self.assertEqual(prompts.template_sys(""), prompts.FINAL_SYS)
+
+    def test_模板结构互不相同(self):
+        """模板存在的意义就是结构不同 —— 两个模板 sys 一样说明有人复制粘贴忘了改。"""
+        seen = {}
+        for k in prompts.TEMPLATES:
+            sysm = prompts.template_sys(k)
+            self.assertNotIn(sysm, seen.values() if k != "default" else {}, f"{k} 与他人重复")
+            seen[k] = sysm
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

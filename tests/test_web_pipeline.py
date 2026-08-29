@@ -434,6 +434,32 @@ class TestSttDelegates(unittest.TestCase):
         self.assertEqual(m.transcribe_pcm(b"\x00" * 32000, "zh"), ("", "zh"))
 
 
+class TestTemplateWiring(unittest.TestCase):
+    """模板要真的传到 LLM —— 「函数对了≠被调用了」,断言实际发出的 sysmsg。"""
+
+    def test_make_minutes按模板换sys(self):
+        m = load_minutes_lib()
+        seen = []
+        orig = m.ask
+        m.ask = lambda sysmsg, user, *a, **k: (seen.append(sysmsg) or "纪要")
+        try:
+            m.make_minutes("转写内容", template="weekly")
+            self.assertIn("各人进展", seen[-1], "weekly 模板没传到 LLM")
+            m.make_minutes("转写内容", template="不存在的")
+            self.assertIn("关键决议", seen[-1], "未知模板该落回默认结构")
+        finally:
+            m.ask = orig
+
+    def test_pipeline从meta读template(self):
+        src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
+        self.assertIn('get("template"', src)
+        self.assertIn("template=template", src)
+
+    def test_start与upload都存template(self):
+        src = (WEB / "web_caption.py").read_text(encoding="utf-8")
+        self.assertGreaterEqual(src.count('"template"') + src.count("'template'"), 2)
+
+
 class TestMakeEnhanced(unittest.TestCase):
     """增强笔记:用户手记为骨架,转写为血肉(Granola 式)。
 
@@ -662,7 +688,7 @@ class TestMaterialWarning(unittest.TestCase):
 
     def test_警告进纪要头部_源码级(self):
         src = (WEB / "meeting" / "meeting_pipeline.py").read_text(encoding="utf-8")
-        i = src.index("make_minutes(text, me, log)")
+        i = src.index("make_minutes(text, me, log")
         blk = src[i:src.index("会议纪要.md", i)]
         self.assertIn("warn", blk, "警告没有拼进纪要正文")
 

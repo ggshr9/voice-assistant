@@ -277,6 +277,7 @@
         <div class="startrow">
           <input id="title" class="input" placeholder="会议标题（可留空，默认日期）">
           <select id="lang" class="input"><option value="zh">语言 · 中文</option><option value="en">英文</option><option value="auto">自动(≈中文,可带英文混说)</option></select>
+          <select id="tpl" class="input"><option value="default">模板 · 通用</option><option value="weekly">周会</option><option value="review">评审会</option><option value="oneonone">1on1</option></select>
           <button class="btn" id="startBtn">▶ 开始</button>
         </div>
         <!-- 试音:开录【之前】就确认这个设备真的有声音。
@@ -488,7 +489,7 @@ $('uploadLink').onclick=e=>{ e.preventDefault(); $('upfile').click(); };
 $('upfile').onchange=async()=>{
   const f=$('upfile').files[0]; if(!f)return;
   const fd=new FormData(); fd.append('pw',pw); fd.append('audio',f);  /* pw 必须排在 audio 前:服务端校验通过才落盘 */
-  fd.append('title',($('title').value.trim()||f.name)); fd.append('language',$('lang').value);
+  fd.append('title',($('title').value.trim()||f.name)); fd.append('language',$('lang').value); fd.append('template',$('tpl').value);
   const d=await(await fetch('/session/upload',{method:'POST',body:fd})).json();
   if(d.error){ alert(d.error); return; }
   $('upfile').value=''; openDetail(d.id, d.job);
@@ -847,7 +848,7 @@ $('go').onclick=async()=>{
   // 采集成功后才建会话
   try{
     const d=await(await fetch('/session/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({scene,lang:$('lang').value,title:$('title').value.trim(),pw})})).json();
+      body:JSON.stringify({scene,lang:$('lang').value,template:$('tpl').value,title:$('title').value.trim(),pw})})).json();
     if(d.error){ alert(d.error); cleanup(); return; }
     curSid=d.id;
   }catch(e){ alert('建会话失败：'+e); cleanup(); return; }

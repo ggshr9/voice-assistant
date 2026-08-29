@@ -76,11 +76,21 @@ def run(audio, outdir, me=None, lang="zh", log=print):
     except Exception:
         pass
     roles = "1" if scene == "线上" else "0"
+    template = ""
+    try:
+        template = json.load(open(os.path.join(outdir, "meta.json"), encoding="utf-8")).get("template", "")
+    except Exception:
+        pass
     wav = os.path.join(outdir, "audio.wav")
     log("准备：转 16k wav")
-    r = subprocess.run(to_wav_cmd(audio, wav, roles), capture_output=True)
-    if r.returncode != 0:                  # 带上 ffmpeg 自己的话,否则只剩一句"处理未产出结果"
-        raise RuntimeError("转 wav 失败：" + r.stderr.decode("utf-8", "ignore")[-400:])
+    if os.path.realpath(audio) == os.path.realpath(wav):
+        # 对同一会话重跑时输入就是上次产出的 audio.wav —— ffmpeg 拒绝原地覆盖,
+        # 而它本来就是我们自己转出的 16k 单声道,直接复用
+        log("输入已是 16k wav,跳过转换")
+    else:
+        r = subprocess.run(to_wav_cmd(audio, wav, roles), capture_output=True)
+        if r.returncode != 0:              # 带上 ffmpeg 自己的话,否则只剩一句"处理未产出结果"
+            raise RuntimeError("转 wav 失败：" + r.stderr.decode("utf-8", "ignore")[-400:])
     if roles == "1" and not me:            # 线上:转写里"我"就是本人
         me = "我"
 
@@ -104,7 +114,7 @@ def run(audio, outdir, me=None, lang="zh", log=print):
     log(f"转写完成：{nspk} 人")
 
     log("生成会议纪要（网关 Qwen3.6）")
-    minutes = minutes_lib.make_minutes(text, me, log)
+    minutes = minutes_lib.make_minutes(text, me, log, template=template)
     if warn:
         minutes = warn + "\n" + minutes
     open(os.path.join(outdir, "会议纪要.md"), "w", encoding="utf-8").write(minutes)

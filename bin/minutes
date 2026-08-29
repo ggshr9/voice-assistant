@@ -25,7 +25,7 @@ import sys, os, re, json, time, glob, subprocess, urllib.request, urllib.error
 # 两边曾各存各的,实测 FINAL_SYS 已漂移到只剩 66% 相似。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction, template_sys
 from _atomicio import atomic_write
 
 API = "http://127.0.0.1:8080/v1/chat/completions"
@@ -168,9 +168,9 @@ def split_chunks(text, size=CHUNK_CHARS):
 
 
 
-def make_minutes(text, me=None):
+def make_minutes(text, me=None, template=None):
     text = _denoise(text)        # 幻觉噪音先清掉再喂 LLM(实测能占掉 5.5% 的上下文)
-    final_sys = FINAL_SYS + me_instruction(me)
+    final_sys = template_sys(template) + me_instruction(me)
     chunks = split_chunks(text)
     if len(chunks) == 1:
         log("@@STAGE minutes_start")
@@ -324,13 +324,17 @@ def main():
     if not args or args[0] in ("-h", "--help"):
         print(__doc__); sys.exit(0)
     # 先抽出带值的 --me（否则它的值会被当成位置参数 / 转写目录）
-    me, notes_path, rest, i = None, None, [], 0
+    me, notes_path, template, rest, i = None, None, None, [], 0
     while i < len(args):
         a = args[i]
         if a == "--me":
             i += 1; me = args[i] if i < len(args) else None
         elif a.startswith("--me="):
             me = a.split("=", 1)[1]
+        elif a == "--template":
+            i += 1; template = args[i] if i < len(args) else None
+        elif a.startswith("--template="):
+            template = a.split("=", 1)[1]
         elif a == "--notes":
             i += 1; notes_path = args[i] if i < len(args) else None
         elif a.startswith("--notes="):
@@ -357,7 +361,7 @@ def main():
     elif me:
         log(f"🙋 已指定「{me}」为我本人，待办将据此区分我的/他人")
     ensure_llm()
-    md = make_minutes(text, me)
+    md = make_minutes(text, me, template)
 
     # 决定输出路径
     base_dir = target if os.path.isdir(target) else os.path.dirname(target) or "."

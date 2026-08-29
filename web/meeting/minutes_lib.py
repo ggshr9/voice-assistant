@@ -6,7 +6,7 @@ import os, re, json, sys, time, string, urllib.request
 # 真源在仓库根 prompts.py,由 sync-web 推到 ~/voice-svc/prompts.py。
 # dirname x3: web/meeting -> web -> voice-svc(本机则是仓库根),两边同一份代码都成立。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction
+from prompts import NOTE_SYS, FINAL_SYS, RECORD_SYS, ENHANCE_SYS, me_instruction, template_sys
 from llm_chain import parse_chain  # noqa: E402  链解析语义唯一一份
 from collections import Counter
 
@@ -129,8 +129,8 @@ def split_chunks(text, size):
 # ---------- 会议纪要 ----------
 
 
-def make_minutes(text, me=None, log=print):
-    sysmsg = FINAL_SYS
+def make_minutes(text, me=None, log=print, template=None):
+    sysmsg = template_sys(template)          # 不认识的模板落回默认,老 meta 不崩
     if me:
         sysmsg += f"\n\n**重要**:「{me}」就是「我」本人,TA 名下待办负责人写 **我**。"
     chunks = split_chunks(text, 12000)

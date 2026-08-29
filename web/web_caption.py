@@ -284,6 +284,14 @@ async def session_start(request):
     if not check_pw(body.get("pw", "")):
         return web.json_response({"error": "口令错误"}, status=403)
     meta = new_session(body.get("scene"), body.get("lang"), body.get("title"))
+    tpl = (body.get("template") or "").strip()
+    if tpl:
+        d0 = sess_dir(meta["id"])
+        if d0:
+            m0 = read_meta(d0) or {}
+            m0["template"] = tpl
+            write_meta(d0, m0)
+            meta = m0
     return web.json_response({"id": meta["id"], "meta": meta})
 
 
@@ -417,6 +425,7 @@ async def session_upload(request):
     if not audio:
         return web.json_response({"error": "没收到音频"}, status=400)
     meta = {"id": os.path.basename(d), "title": fields.get("title", "").strip() or time.strftime("%m-%d %H:%M 上传"),
+            "template": (fields.get("template") or "").strip(),
             "scene": "上传", "lang": fields.get("language", "auto"),
             "started": time.time(), "ended": time.time(), "status": "processing", "duration": 0}
     write_meta(d, meta)
